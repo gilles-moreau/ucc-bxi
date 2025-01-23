@@ -86,6 +86,10 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     req_param.op_attr_mask =
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
+    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_OFFH;
+        req_param.offh = task->offload_ctx;
+    }
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.send     = cb;
     req_param.memory_type = ucc_memtype_to_ucs[mtype];
@@ -148,6 +152,10 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     req_param.op_attr_mask =
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
+    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_OFFH;
+        req_param.offh = task->offload_ctx;
+    }
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.recv     = cb;
     req_param.memory_type = ucc_memtype_to_ucs[mtype];
@@ -443,6 +451,25 @@ static inline ucc_status_t ucc_tl_ucp_atomic_inc(void *     target,
         ucp_request_free(ucp_status);
     }
     return UCC_OK;
+}
+
+static inline ucc_status_t ucc_tl_ucp_create_offload_ctx(ucc_tl_ucp_team_t *team, 
+                                                         ucc_tl_ucp_task_t *task) {
+    ucs_status_t ucp_status;
+
+    ucp_status = ucp_offload_context_create(team->worker->ucp_worker, 
+                                            &task->offload_ctx);
+    if (UCS_OK != ucp_status) {
+        if (UCS_PTR_IS_ERR(ucp_status)) {
+            return ucs_status_to_ucc_status(UCS_PTR_STATUS(ucp_status));
+        }
+    }
+
+    return UCC_OK;
+}
+
+static inline void ucc_tl_ucp_delete_offload_ctx(ucc_tl_ucp_task_t *task) {
+    ucp_offload_context_fini(task->offload_ctx); 
 }
 
 #define UCPCHECK_GOTO(_cmd, _task, _label)                                     \

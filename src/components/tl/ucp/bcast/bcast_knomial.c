@@ -65,7 +65,8 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
             }
         }
         dist /= radix;
-        if (UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
+        if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS && 
+            UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             task->bcast_kn.dist = dist;
             return;
         }
@@ -75,6 +76,7 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
         return;
     }
 
+    ucc_tl_ucp_delete_offload_ctx(task);
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
     task->super.status = UCC_OK;
     UCC_TL_UCP_PROFILE_REQUEST_EVENT(coll_task, "ucp_bcast_kn_done", 0);
@@ -87,9 +89,19 @@ ucc_status_t ucc_tl_ucp_bcast_knomial_start(ucc_coll_task_t *coll_task)
     ucc_tl_ucp_task_t *task = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
     ucc_tl_ucp_team_t *team = TASK_TEAM(task);
     ucc_rank_t         size = (ucc_rank_t)task->subset.map.ep_num;
+    ucc_coll_args_t   *coll_args = &TASK_ARGS(task);
 
     UCC_TL_UCP_PROFILE_REQUEST_EVENT(coll_task, "ucp_bcast_kn_start", 0);
     ucc_tl_ucp_task_reset(task, UCC_INPROGRESS);
+
+    if (coll_args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+        ucc_status_t status = ucc_tl_ucp_create_offload_ctx(team, task);
+
+        if (status != UCC_OK) {
+            return status;
+        }
+    }
 
     CALC_KN_TREE_DIST(size, task->bcast_kn.radix, task->bcast_kn.dist);
 

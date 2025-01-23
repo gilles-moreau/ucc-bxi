@@ -1710,12 +1710,15 @@ typedef enum {
                                                             Note, the status is not guaranteed
                                                             to be global on all the processes
                                                             participating in the collective.*/
-    UCC_COLL_ARGS_FLAG_MEM_MAPPED_BUFFERS   = UCC_BIT(7)  /*!< If set, both src
+    UCC_COLL_ARGS_FLAG_MEM_MAPPED_BUFFERS   = UCC_BIT(7), /*!< If set, both src
                                                             and dst buffers
                                                             reside in a memory
                                                             mapped region.
                                                             Useful for one-sided
                                                             collectives. */
+    UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS   = UCC_BIT(8)  /*!< If set, operations will be 
+                                                            offloaded to the NIC if it is 
+                                                            supported. */
 } ucc_coll_args_flags_t;
 
 /**

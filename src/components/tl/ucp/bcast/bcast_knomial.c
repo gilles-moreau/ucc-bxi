@@ -65,7 +65,7 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
             }
         }
         dist /= radix;
-        if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS && 
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) && 
             UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             task->bcast_kn.dist = dist;
             return;
@@ -76,7 +76,9 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
         return;
     }
 
-    ucc_tl_ucp_delete_offload_ctx(task);
+    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        ucc_tl_ucp_delete_offload_ctx(task);
+    }
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
     task->super.status = UCC_OK;
     UCC_TL_UCP_PROFILE_REQUEST_EVENT(coll_task, "ucp_bcast_kn_done", 0);

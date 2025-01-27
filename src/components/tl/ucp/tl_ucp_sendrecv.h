@@ -460,11 +460,17 @@ static inline ucc_status_t ucc_tl_ucp_create_offload_ctx(ucc_tl_ucp_team_t *team
     ucp_status = ucp_offload_context_create(team->worker->ucp_worker, 
                                             &task->offload_ctx);
     if (UCS_OK != ucp_status) {
+        if (ucp_status == UCS_ERR_NO_RESOURCE) {
+            /* Offload was requested but no transport supports it, so remove flag. */
+            task->flags &= ~UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+            goto out;
+        }
         if (UCS_PTR_IS_ERR(ucp_status)) {
             return ucs_status_to_ucc_status(UCS_PTR_STATUS(ucp_status));
         }
     }
 
+out:
     return UCC_OK;
 }
 

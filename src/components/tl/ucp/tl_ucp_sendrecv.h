@@ -59,11 +59,14 @@ void ucc_tl_ucp_recv_completion_cb(void *request, ucs_status_t status,
                      task->tagged.tag, dest_group_rank,                        \
                      team->super.super.params.id,                              \
                      ucs_status_string(UCS_PTR_STATUS(ucp_status)));           \
-            ucp_request_cancel(team->worker->ucp_worker, ucp_status);          \
-            ucp_request_free(ucp_status);                                      \
+            if (UCS_PTR_STATUS(ucp_status) != UCS_ERR_NO_MESSAGE) {            \
+                ucp_request_cancel(team->worker->ucp_worker, ucp_status);      \
+                ucp_request_free(ucp_status);                                  \
+            }                                                                  \
             return ucs_status_to_ucc_status(UCS_PTR_STATUS(ucp_status));       \
         }                                                                      \
     } while (0)
+
 
 static inline ucs_status_ptr_t
 ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,

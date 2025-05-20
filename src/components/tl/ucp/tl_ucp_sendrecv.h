@@ -90,7 +90,7 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
     if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_OFFH;
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
         req_param.schedh = task->sched;
     }
     req_param.datatype    = ucp_dt_make_contig(msglen);
@@ -156,7 +156,7 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
     if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_OFFH;
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
         req_param.schedh = task->sched;
     }
     req_param.datatype    = ucp_dt_make_contig(msglen);

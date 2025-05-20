@@ -91,7 +91,7 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
     if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
         req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_OFFH;
-        req_param.offh = task->offload_ctx;
+        req_param.schedh = task->sched;
     }
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.send     = cb;
@@ -157,7 +157,7 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
     if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
         req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_OFFH;
-        req_param.offh = task->offload_ctx;
+        req_param.schedh = task->sched;
     }
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.recv     = cb;
@@ -456,12 +456,12 @@ static inline ucc_status_t ucc_tl_ucp_atomic_inc(void *     target,
     return UCC_OK;
 }
 
-static inline ucc_status_t ucc_tl_ucp_create_offload_ctx(ucc_tl_ucp_team_t *team, 
-                                                         ucc_tl_ucp_task_t *task) {
+static inline ucc_status_t ucc_tl_ucp_create_offload_sched(ucc_tl_ucp_team_t *team, 
+                                                           ucc_tl_ucp_task_t *task) {
     ucs_status_t ucp_status;
 
-    ucp_status = ucp_offload_context_create(team->worker->ucp_worker, 
-                                            &task->offload_ctx);
+    ucp_status = ucp_offload_sched_create(team->worker->ucp_worker, 
+                                          &task->sched);
     if (UCS_OK != ucp_status) {
         if (ucp_status == UCS_ERR_NO_RESOURCE) {
             /* Offload was requested but no transport supports it, so remove flag. */
@@ -477,8 +477,8 @@ out:
     return UCC_OK;
 }
 
-static inline void ucc_tl_ucp_delete_offload_ctx(ucc_tl_ucp_task_t *task) {
-    ucp_offload_context_fini(task->offload_ctx); 
+static inline void ucc_tl_ucp_delete_offload_sched(ucc_tl_ucp_task_t *task) {
+    ucp_offload_sched_fini(task->sched); 
 }
 
 #define UCPCHECK_GOTO(_cmd, _task, _label)                                     \

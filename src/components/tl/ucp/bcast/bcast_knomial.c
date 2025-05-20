@@ -77,7 +77,7 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
     }
 
     if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        ucc_tl_ucp_delete_offload_ctx(task);
+        ucc_tl_ucp_delete_offload_sched(task);
     }
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
     task->super.status = UCC_OK;
@@ -98,7 +98,7 @@ ucc_status_t ucc_tl_ucp_bcast_knomial_start(ucc_coll_task_t *coll_task)
 
     if (coll_args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
         task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
-        ucc_status_t status = ucc_tl_ucp_create_offload_ctx(team, task);
+        ucc_status_t status = ucc_tl_ucp_create_offload_sched(team, task);
 
         if (status != UCC_OK) {
             return status;

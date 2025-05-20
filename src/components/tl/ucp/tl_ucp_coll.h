@@ -114,9 +114,9 @@ typedef struct ucc_tl_ucp_task {
             uint32_t        get_completed;
         } onesided;
     };
-    uint32_t        n_polls;
-    ucc_subset_t    subset;
-    ucp_offload_context_h offload_ctx;
+    uint32_t            n_polls;
+    ucc_subset_t        subset;
+    ucp_offload_sched_h sched;
     union {
         struct {
             int                     phase;

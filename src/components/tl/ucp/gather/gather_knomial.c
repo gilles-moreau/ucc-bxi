@@ -194,12 +194,20 @@ UCC_GATHER_KN_PHASE_INIT:
         }
 
 UCC_GATHER_KN_PHASE_PROGRESS:
-        if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) &&
+            UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
             SAVE_STATE(UCC_GATHER_KN_PHASE_PROGRESS);
             return;
         }
         task->gather_kn.dist *= radix;
         ucc_kn_g_pattern_next_iter(p);
+    }
+
+UCC_GATHER_KN_PHASE_FINALIZE:
+    if ((task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) && 
+        UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        SAVE_STATE(UCC_GATHER_KN_PHASE_FINALIZE);
+        return;
     }
 
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
@@ -242,12 +250,25 @@ ucc_status_t ucc_tl_ucp_gather_knomial_start(ucc_coll_task_t *coll_task)
     task->gather_kn.dist  = 1;
     task->gather_kn.phase = UCC_GATHER_KN_PHASE_INIT;
 
+    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+        ucc_status_t status = ucc_tl_ucp_create_offload_sched(team, task);
+
+        if (status != UCC_OK) {
+            return status;
+        }
+    }
+
     return ucc_progress_queue_enqueue(UCC_TL_CORE_CTX(team)->pq, &task->super);
 }
 
 ucc_status_t ucc_tl_ucp_gather_knomial_finalize(ucc_coll_task_t *coll_task)
 {
     ucc_tl_ucp_task_t *task = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
+
+    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        ucc_tl_ucp_delete_offload_sched(task);
+    }
 
     if (task->gather_kn.scratch_mc_header) {
         ucc_mc_free(task->gather_kn.scratch_mc_header);

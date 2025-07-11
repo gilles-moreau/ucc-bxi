@@ -14,6 +14,19 @@
 #include "utils/ucc_math.h"
 #include "utils/ucc_coll_utils.h"
 
+#define UCC_SCATTER_KN_CHECK_PHASE(_p)                                         \
+    case _p:                                                                   \
+        goto _p;
+
+#define UCC_SCATTER_KN_GOTO_PHASE(_phase)                                      \
+    do {                                                                       \
+        switch (_phase) {                                                      \
+            UCC_SCATTER_KN_CHECK_PHASE(UCC_SCATTER_KN_PHASE_FINALIZE);         \
+            UCC_SCATTER_KN_CHECK_PHASE(UCC_SCATTER_KN_PHASE_LOOP);         \
+            UCC_SCATTER_KN_CHECK_PHASE(UCC_SCATTER_KN_PHASE_INIT);             \
+        };                                                                     \
+    } while (0)
+
 #define SAVE_STATE(_phase)                                                     \
     do {                                                                       \
         task->scatter_kn.phase = _phase;                                       \
@@ -21,7 +34,8 @@
 
 enum {
     UCC_SCATTER_KN_PHASE_INIT,
-    UCC_SCATTER_KN_PHASE_LOOP, /* main loop of recursive k-ing */
+    UCC_SCATTER_KN_PHASE_LOOP,     /* main loop of recursive k-ing */
+    UCC_SCATTER_KN_PHASE_FINALIZE, /* finalizing with progression */
 };
 
 void ucc_tl_ucp_scatter_knomial_progress(ucc_coll_task_t *coll_task)
@@ -52,14 +66,12 @@ void ucc_tl_ucp_scatter_knomial_progress(ucc_coll_task_t *coll_task)
     root = VRANK(root, root, size);
     sbuf = (rank == root) ? args->src.info.buffer : args->dst.info.buffer;
 
-    if (task->scatter_kn.phase == UCC_SCATTER_KN_PHASE_LOOP) {
-        goto UCC_SCATTER_KN_PHASE_LOOP;
-    }
-
     if (KN_NODE_EXTRA == p->node_type) {
         goto out;
     }
 
+    UCC_SCATTER_KN_GOTO_PHASE(task->scatter_kn.phase);
+UCC_SCATTER_KN_PHASE_INIT:
     while (!ucc_knomial_pattern_loop_done(p)) {
         step_radix  = ucc_kn_compute_step_radix(p);
         block_count = ucc_sra_kn_compute_block_count(count, rank, p);
@@ -104,7 +116,8 @@ void ucc_tl_ucp_scatter_knomial_progress(ucc_coll_task_t *coll_task)
          from previous iteration has completed.
         */
         if ((root == rank) || (task->tagged.recv_posted > 0)) {
-            ucc_assert(UCC_TL_UCP_TASK_RECV_COMPLETE(task));
+            ucc_assert((task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) ||
+                UCC_TL_UCP_TASK_RECV_COMPLETE(task));
             for (loop_step = 1; loop_step < radix; loop_step++) {
                 peer = ucc_knomial_pattern_get_loop_peer(p, rank, loop_step);
                 if (peer == UCC_KN_PEER_NULL)
@@ -128,11 +141,19 @@ void ucc_tl_ucp_scatter_knomial_progress(ucc_coll_task_t *coll_task)
         }
 
 UCC_SCATTER_KN_PHASE_LOOP:
-        if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) &&
+            UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
             SAVE_STATE(UCC_SCATTER_KN_PHASE_LOOP);
             return;
         }
         ucc_knomial_pattern_next_iteration(p);
+    }
+
+UCC_SCATTER_KN_PHASE_FINALIZE:
+    if ((task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) && 
+        UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        SAVE_STATE(UCC_SCATTER_KN_PHASE_FINALIZE);
+        return;
     }
 
     if (task->scatter_kn.recv_offset == 0 && (rank != root)) {
@@ -186,11 +207,26 @@ ucc_status_t ucc_tl_ucp_scatter_knomial_start(ucc_coll_task_t *coll_task)
     }
     task->scatter_kn.send_offset = 0;
 
+    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+        ucc_status_t status = ucc_tl_ucp_create_offload_sched(team, task);
+
+        if (status != UCC_OK) {
+            return status;
+        }
+    }
+
     return ucc_progress_queue_enqueue(UCC_TL_CORE_CTX(team)->pq, &task->super);
 }
 
 ucc_status_t ucc_tl_ucp_scatter_knomial_finalize(ucc_coll_task_t *coll_task)
 {
+    ucc_tl_ucp_task_t *task = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
+
+    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        ucc_tl_ucp_delete_offload_sched(task);
+    }
+
     return ucc_tl_ucp_coll_finalize(coll_task);
 }
 

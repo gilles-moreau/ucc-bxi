@@ -83,6 +83,10 @@ ucc_status_t ucc_tl_ucp_allgather_bruck_finalize(ucc_coll_task_t *coll_task)
         task->allgather_bruck.scratch_size = 0;
     }
 
+    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        ucc_tl_ucp_delete_offload_sched(task);
+    }
+
     status = ucc_tl_ucp_coll_finalize(&task->super);
     if (ucc_unlikely(status != UCC_OK)) {
         tl_error(UCC_TASK_LIB(task),
@@ -141,7 +145,8 @@ void ucc_tl_ucp_allgather_bruck_progress(ucc_coll_task_t *coll_task)
                                          recvfrom, team, task),
                       task, out);
 
-        if (UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) &&
+            UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             return;
         }
 
@@ -222,6 +227,7 @@ out:
 ucc_status_t ucc_tl_ucp_allgather_bruck_start(ucc_coll_task_t *coll_task)
 {
     ucc_tl_ucp_task_t *task      = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
+    ucc_coll_args_t   *args      = &TASK_ARGS(task);
     ucc_tl_ucp_team_t *team      = TASK_TEAM(task);
     size_t             count     = TASK_ARGS(task).dst.info.count;
     void              *sbuf      = TASK_ARGS(task).src.info.buffer;
@@ -249,6 +255,15 @@ ucc_status_t ucc_tl_ucp_allgather_bruck_start(ucc_coll_task_t *coll_task)
         status = ucc_mc_memcpy(rbuf, PTR_OFFSET(rbuf, data_size * trank),
                                data_size, rmem, rmem);
         if (ucc_unlikely(UCC_OK != status)) {
+            return status;
+        }
+    }
+
+    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+        status = ucc_tl_ucp_create_offload_sched(team, task);
+
+        if (status != UCC_OK) {
             return status;
         }
     }

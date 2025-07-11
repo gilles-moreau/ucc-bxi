@@ -168,7 +168,8 @@ UCC_KN_PHASE_EXTRA:
                 task, out);
         }
     UCC_KN_PHASE_LOOP:
-        if (UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) && 
+            UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             SAVE_STATE(UCC_KN_PHASE_LOOP);
             return;
         }
@@ -187,6 +188,10 @@ UCC_KN_PHASE_PROXY:
     if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
         SAVE_STATE(UCC_KN_PHASE_PROXY);
         return;
+    }
+
+    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        ucc_tl_ucp_delete_offload_sched(task);
     }
 
 out:
@@ -282,6 +287,15 @@ ucc_status_t ucc_tl_ucp_allgather_knomial_start(ucc_coll_task_t *coll_task)
             p->radix, 0);
     }
     task->allgather_kn.sbuf = PTR_OFFSET(rbuf, offset);
+
+    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+        status = ucc_tl_ucp_create_offload_sched(team, task);
+
+        if (status != UCC_OK) {
+            return status;
+        }
+    }
 
     return ucc_progress_queue_enqueue(UCC_TL_CORE_CTX(team)->pq, &task->super);
 }

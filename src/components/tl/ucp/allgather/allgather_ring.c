@@ -64,10 +64,16 @@ void ucc_tl_ucp_allgather_ring_progress(ucc_coll_task_t *coll_task)
         UCPCHECK_GOTO(
             ucc_tl_ucp_recv_nb(buf, data_size, rmem, recvfrom, team, task),
             task, out);
-        if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) && 
+            UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
             return;
         }
     }
+
+    if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        return;
+    }
+
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
     task->super.status = UCC_OK;
 out:
@@ -77,6 +83,7 @@ out:
 ucc_status_t ucc_tl_ucp_allgather_ring_start(ucc_coll_task_t *coll_task)
 {
     ucc_tl_ucp_task_t *task      = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
+    ucc_coll_args_t   *coll_args = &TASK_ARGS(task);
     ucc_tl_ucp_team_t *team      = TASK_TEAM(task);
     size_t             count     = TASK_ARGS(task).dst.info.count;
     void              *sbuf      = TASK_ARGS(task).src.info.buffer;
@@ -99,6 +106,15 @@ ucc_status_t ucc_tl_ucp_allgather_ring_start(ucc_coll_task_t *coll_task)
         status = ucc_mc_memcpy(PTR_OFFSET(rbuf, data_size * block),
                                sbuf, data_size, rmem, smem);
         if (ucc_unlikely(UCC_OK != status)) {
+            return status;
+        }
+    }
+
+    if (coll_args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+        status = ucc_tl_ucp_create_offload_sched(team, task);
+
+        if (status != UCC_OK) {
             return status;
         }
     }

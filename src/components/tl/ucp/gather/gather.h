@@ -23,6 +23,7 @@ enum
 {
     UCC_GATHER_KN_PHASE_INIT,
     UCC_GATHER_KN_PHASE_PROGRESS, /* checks progress */
+    UCC_GATHER_KN_PHASE_FINALIZE, /* checks progress finalization */
 };
 
 #define UCC_GATHER_KN_CHECK_PHASE(_p)                                          \
@@ -32,6 +33,7 @@ enum
 #define UCC_GATHER_KN_GOTO_PHASE(_phase)                                       \
     do {                                                                       \
         switch (_phase) {                                                      \
+            UCC_GATHER_KN_CHECK_PHASE(UCC_GATHER_KN_PHASE_FINALIZE);           \
             UCC_GATHER_KN_CHECK_PHASE(UCC_GATHER_KN_PHASE_PROGRESS);           \
             UCC_GATHER_KN_CHECK_PHASE(UCC_GATHER_KN_PHASE_INIT);               \
         };                                                                     \

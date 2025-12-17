@@ -126,25 +126,6 @@ UCC_KN_PHASE_EXTRA:
                                    &local_seg_offset);
         sbuf = PTR_OFFSET(rbuf, local_seg_offset * dt_size);
 
-        for (loop_step = radix - 1; loop_step > 0; loop_step--) {
-            peer = ucc_knomial_pattern_get_loop_peer(p, rank, loop_step);
-            if (peer == UCC_KN_PEER_NULL)
-                continue;
-            if (coll_task->bargs.args.coll_type == UCC_COLL_TYPE_BCAST) {
-                peer_dist = ucc_knomial_calc_recv_dist(size - p->n_extra,
-                        ucc_knomial_pattern_loop_rank(p, peer), p->radix, 0);
-                if (peer_dist < task->allgather_kn.recv_dist) {
-                    continue;
-                }
-            }
-            UCPCHECK_GOTO(ucc_tl_ucp_send_nb(sbuf, local_seg_count * dt_size,
-                                             mem_type,
-                                             ucc_ep_map_eval(task->subset.map,
-                                             INV_VRANK(peer, broot, size)),
-                                             team, task),
-                          task, out);
-        }
-
         for (loop_step = 1; loop_step < radix; loop_step++) {
             peer = ucc_knomial_pattern_get_loop_peer(p, rank, loop_step);
             if (peer == UCC_KN_PEER_NULL)
@@ -167,8 +148,28 @@ UCC_KN_PHASE_EXTRA:
                                    team, task),
                 task, out);
         }
+
+        for (loop_step = radix - 1; loop_step > 0; loop_step--) {
+            peer = ucc_knomial_pattern_get_loop_peer(p, rank, loop_step);
+            if (peer == UCC_KN_PEER_NULL)
+                continue;
+            if (coll_task->bargs.args.coll_type == UCC_COLL_TYPE_BCAST) {
+                peer_dist = ucc_knomial_calc_recv_dist(size - p->n_extra,
+                        ucc_knomial_pattern_loop_rank(p, peer), p->radix, 0);
+                if (peer_dist < task->allgather_kn.recv_dist) {
+                    continue;
+                }
+            }
+            UCPCHECK_GOTO(ucc_tl_ucp_send_nb(sbuf, local_seg_count * dt_size,
+                                             mem_type,
+                                             ucc_ep_map_eval(task->subset.map,
+                                             INV_VRANK(peer, broot, size)),
+                                             team, task),
+                          task, out);
+        }
+
     UCC_KN_PHASE_LOOP:
-        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) && 
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) && 
             UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             SAVE_STATE(UCC_KN_PHASE_LOOP);
             return;
@@ -190,8 +191,8 @@ UCC_KN_PHASE_PROXY:
         return;
     }
 
-    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        ucc_tl_ucp_delete_offload_sched(task);
+    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        ucc_tl_ucp_delete_sched(task);
     }
 
 out:
@@ -288,9 +289,9 @@ ucc_status_t ucc_tl_ucp_allgather_knomial_start(ucc_coll_task_t *coll_task)
     }
     task->allgather_kn.sbuf = PTR_OFFSET(rbuf, offset);
 
-    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
-        status = ucc_tl_ucp_create_offload_sched(team, task);
+    if (args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
+        status = ucc_tl_ucp_create_sched(team, task);
 
         if (status != UCC_OK) {
             return status;

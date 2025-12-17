@@ -83,8 +83,8 @@ ucc_status_t ucc_tl_ucp_allgather_bruck_finalize(ucc_coll_task_t *coll_task)
         task->allgather_bruck.scratch_size = 0;
     }
 
-    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        ucc_tl_ucp_delete_offload_sched(task);
+    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        ucc_tl_ucp_delete_sched(task);
     }
 
     status = ucc_tl_ucp_coll_finalize(&task->super);
@@ -145,7 +145,7 @@ void ucc_tl_ucp_allgather_bruck_progress(ucc_coll_task_t *coll_task)
                                          recvfrom, team, task),
                       task, out);
 
-        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) &&
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) &&
             UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             return;
         }
@@ -259,9 +259,9 @@ ucc_status_t ucc_tl_ucp_allgather_bruck_start(ucc_coll_task_t *coll_task)
         }
     }
 
-    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
-        status = ucc_tl_ucp_create_offload_sched(team, task);
+    if (args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
+        status = ucc_tl_ucp_create_sched(team, task);
 
         if (status != UCC_OK) {
             return status;

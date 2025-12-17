@@ -116,7 +116,7 @@ UCC_SCATTER_KN_PHASE_INIT:
          from previous iteration has completed.
         */
         if ((root == rank) || (task->tagged.recv_posted > 0)) {
-            ucc_assert((task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) ||
+            ucc_assert((task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) ||
                 UCC_TL_UCP_TASK_RECV_COMPLETE(task));
             for (loop_step = 1; loop_step < radix; loop_step++) {
                 peer = ucc_knomial_pattern_get_loop_peer(p, rank, loop_step);
@@ -141,7 +141,7 @@ UCC_SCATTER_KN_PHASE_INIT:
         }
 
 UCC_SCATTER_KN_PHASE_LOOP:
-        if (!(task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) &&
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) &&
             UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
             SAVE_STATE(UCC_SCATTER_KN_PHASE_LOOP);
             return;
@@ -150,7 +150,7 @@ UCC_SCATTER_KN_PHASE_LOOP:
     }
 
 UCC_SCATTER_KN_PHASE_FINALIZE:
-    if ((task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) && 
+    if ((task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) && 
         UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
         SAVE_STATE(UCC_SCATTER_KN_PHASE_FINALIZE);
         return;
@@ -207,9 +207,9 @@ ucc_status_t ucc_tl_ucp_scatter_knomial_start(ucc_coll_task_t *coll_task)
     }
     task->scatter_kn.send_offset = 0;
 
-    if (args->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        task->flags |= UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
-        ucc_status_t status = ucc_tl_ucp_create_offload_sched(team, task);
+    if (args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
+        ucc_status_t status = ucc_tl_ucp_create_sched(team, task);
 
         if (status != UCC_OK) {
             return status;
@@ -223,8 +223,8 @@ ucc_status_t ucc_tl_ucp_scatter_knomial_finalize(ucc_coll_task_t *coll_task)
 {
     ucc_tl_ucp_task_t *task = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
 
-    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
-        ucc_tl_ucp_delete_offload_sched(task);
+    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        ucc_tl_ucp_delete_sched(task);
     }
 
     return ucc_tl_ucp_coll_finalize(coll_task);

@@ -89,7 +89,7 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     req_param.op_attr_mask =
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
-    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
         req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
         req_param.schedh = task->sched;
     }
@@ -141,6 +141,7 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
                        ucc_rank_t dest_group_rank, ucc_tl_ucp_team_t *team,
                        ucc_tl_ucp_task_t *task, ucp_tag_recv_nbx_callback_t cb, void *user_data)
 {
+    ucc_status_t status;
     ucc_coll_args_t    *args = &TASK_ARGS(task);
     ucp_request_param_t req_param;
     ucp_tag_t           ucp_tag, ucp_tag_mask;
@@ -155,10 +156,17 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     req_param.op_attr_mask =
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
-    if (task->flags & UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS) {
+    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
         req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
         req_param.schedh = task->sched;
+
     }
+    status = ucc_tl_ucp_get_ep(team, dest_group_rank, 
+                               &req_param.reply_ep);
+    if (ucc_unlikely(UCC_OK != status)) {
+        return UCS_STATUS_PTR(UCS_ERR_NO_MESSAGE);
+    }
+    req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_EPH;
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.recv     = cb;
     req_param.memory_type = ucc_memtype_to_ucs[mtype];
@@ -456,16 +464,15 @@ static inline ucc_status_t ucc_tl_ucp_atomic_inc(void *     target,
     return UCC_OK;
 }
 
-static inline ucc_status_t ucc_tl_ucp_create_offload_sched(ucc_tl_ucp_team_t *team, 
-                                                           ucc_tl_ucp_task_t *task) {
+static inline ucc_status_t ucc_tl_ucp_create_sched(ucc_tl_ucp_team_t *team, 
+                                                   ucc_tl_ucp_task_t *task) {
     ucs_status_t ucp_status;
 
-    ucp_status = ucp_offload_sched_create(team->worker->ucp_worker, 
-                                          &task->sched);
+    ucp_status = ucp_sched_create(team->worker->ucp_worker, &task->sched);
     if (UCS_OK != ucp_status) {
         if (ucp_status == UCS_ERR_NO_RESOURCE) {
             /* Offload was requested but no transport supports it, so remove flag. */
-            task->flags &= ~UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS;
+            task->flags &= ~UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
             goto out;
         }
         if (UCS_PTR_IS_ERR(ucp_status)) {
@@ -477,8 +484,8 @@ out:
     return UCC_OK;
 }
 
-static inline void ucc_tl_ucp_delete_offload_sched(ucc_tl_ucp_task_t *task) {
-    ucp_offload_sched_fini(task->sched); 
+static inline void ucc_tl_ucp_delete_sched(ucc_tl_ucp_task_t *task) {
+    ucp_sched_fini(task->sched); 
 }
 
 #define UCPCHECK_GOTO(_cmd, _task, _label)                                     \

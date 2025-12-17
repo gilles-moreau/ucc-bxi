@@ -115,9 +115,18 @@ void ucc_tl_ucp_allgather_neighbor_progress(ucc_coll_task_t *coll_task)
                                          neighbors[i_parity], team, task),
                       task, out);
 
-        if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        if (!(task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) && 
+            UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
             return;
         }
+    }
+
+    if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        return;
+    }
+
+    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        ucc_tl_ucp_delete_sched(task);
     }
 
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
@@ -131,6 +140,7 @@ out:
 ucc_status_t ucc_tl_ucp_allgather_neighbor_start(ucc_coll_task_t *coll_task)
 {
     ucc_tl_ucp_task_t *task      = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
+    ucc_coll_args_t   *coll_args = &TASK_ARGS(task);
     ucc_tl_ucp_team_t *team      = TASK_TEAM(task);
     size_t             count     = TASK_ARGS(task).dst.info.count;
     void              *sbuf      = TASK_ARGS(task).src.info.buffer;
@@ -165,6 +175,15 @@ ucc_status_t ucc_tl_ucp_allgather_neighbor_start(ucc_coll_task_t *coll_task)
 
     tmprecv = PTR_OFFSET(rbuf, neighbor * data_size);
     tmpsend = PTR_OFFSET(rbuf, trank * data_size);
+
+    if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        task->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
+        status = ucc_tl_ucp_create_sched(team, task);
+
+        if (status != UCC_OK) {
+            return status;
+        }
+    }
 
     /* Sendreceive */
     UCPCHECK_GOTO(

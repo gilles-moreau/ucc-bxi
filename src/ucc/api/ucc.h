@@ -1716,9 +1716,8 @@ typedef enum {
                                                             mapped region.
                                                             Useful for one-sided
                                                             collectives. */
-    UCC_COLL_ARGS_FLAG_OFFLOAD_OPERATIONS   = UCC_BIT(8)  /*!< If set, operations will be 
-                                                            offloaded to the NIC if it is 
-                                                            supported. */
+    UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS  = UCC_BIT(8)  /*!< If set, operations will be 
+                                                            scheduled. */
 } ucc_coll_args_flags_t;
 
 /**

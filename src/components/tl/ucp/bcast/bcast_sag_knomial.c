@@ -60,7 +60,12 @@ ucc_status_t
 ucc_tl_ucp_bcast_sag_knomial_finalize(ucc_coll_task_t *coll_task)
 {
     ucc_schedule_t *schedule = ucc_derived_of(coll_task, ucc_schedule_t);
+    ucc_tl_ucp_schedule_t *tl_schedule = ucs_derived_of(schedule, ucc_tl_ucp_schedule_t);
     ucc_status_t    status;
+
+    if (tl_schedule->sched != NULL) {
+        ucp_sched_fini(tl_schedule->sched);
+    }
 
     UCC_TL_UCP_PROFILE_REQUEST_EVENT(schedule, "ucp_bcast_sag_kn_done", 0);
     status = ucc_schedule_finalize(coll_task);
@@ -73,16 +78,20 @@ ucc_tl_ucp_bcast_sag_knomial_init(ucc_base_coll_args_t *coll_args,
                                   ucc_base_team_t *team,
                                   ucc_coll_task_t **task_h)
 {
-    ucc_tl_ucp_team_t   *tl_team  = ucc_derived_of(team, ucc_tl_ucp_team_t);
-    size_t               count    = coll_args->args.src.info.count;
-    ucc_datatype_t       dtype    = coll_args->args.src.info.datatype;
-    ucc_memory_type_t    mem_type = coll_args->args.src.info.mem_type;
-    ucc_base_coll_args_t args     = *coll_args;
-    ucc_mrange_uint_t   *p        = &tl_team->cfg.bcast_sag_kn_radix;
-    ucc_schedule_t      *schedule;
-    ucc_coll_task_t     *task, *rs_task;
-    ucc_status_t         status;
-    ucc_kn_radix_t       radix, cfg_radix;
+    ucc_tl_ucp_team_t     *tl_team  = ucc_derived_of(team, ucc_tl_ucp_team_t);
+    size_t                 count    = coll_args->args.src.info.count;
+    ucc_datatype_t         dtype    = coll_args->args.src.info.datatype;
+    ucc_memory_type_t      mem_type = coll_args->args.src.info.mem_type;
+    ucc_base_coll_args_t   args     = *coll_args;
+    ucc_mrange_uint_t     *p        = &tl_team->cfg.bcast_sag_kn_radix;
+    ucc_tl_ucp_schedule_t *tl_schedule;
+    ucc_tl_ucp_task_t     *tl_task;
+    ucc_schedule_t        *schedule;
+    ucc_coll_task_t       *task, *rs_task;
+    ucc_event_t            ev;
+    ucc_status_t           status;
+    ucs_status_t           ucp_status;
+    ucc_kn_radix_t         radix, cfg_radix;
 
     if (UCC_COLL_ARGS_ACTIVE_SET(&coll_args->args)) {
         /* ActiveSets currently are only supported with KN alg */
@@ -101,6 +110,18 @@ ucc_tl_ucp_bcast_sag_knomial_init(ucc_base_coll_args_t *coll_args,
     if (ucc_unlikely(UCC_OK != status)) {
         return status;
     }
+
+    tl_schedule = ucs_derived_of(schedule, ucc_tl_ucp_schedule_t);
+
+    tl_schedule->sched = NULL;
+    if (args.args.flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        ucp_status = ucp_sched_create(tl_team->worker->ucp_worker, 
+                                      &tl_schedule->sched);
+        if (ucp_status != UCS_OK) {
+            return ucs_status_to_ucc_status(UCS_PTR_STATUS(ucp_status));
+        }
+    }
+
     /* 1st step of bcast: knomial scatter */
     args.args.dst.info.buffer   = args.args.src.info.buffer;
     args.args.dst.info.mem_type = args.args.src.info.mem_type;
@@ -109,12 +130,19 @@ ucc_tl_ucp_bcast_sag_knomial_init(ucc_base_coll_args_t *coll_args,
     UCC_CHECK_GOTO(ucc_tl_ucp_scatter_knomial_init_r(&args, team, &task, radix),
                    out, status);
 
+    if (tl_schedule->sched != NULL) {
+        tl_task         = ucs_derived_of(task, ucc_tl_ucp_task_t);
+        tl_task->flags |= UCC_TL_UCP_TASK_FLAG_SCHEDULED | 
+            UCC_TL_UCP_TASK_FLAG_SCHED_NO_RELEASE;
+        tl_task->sched  = tl_schedule->sched;
+    }
+
     UCC_CHECK_GOTO(ucc_schedule_add_task(schedule, task), out, status);
     UCC_CHECK_GOTO(ucc_event_manager_subscribe(&schedule->super,
                                                UCC_EVENT_SCHEDULE_STARTED, task,
                                                ucc_task_start_handler),
                    out, status);
-    rs_task = task;
+    rs_task = tl_schedule->sched != NULL ? &schedule->super : task;
 
     /* 2nd step of bcast: knomial allgather. 2nd task subscribes
      to completion event of scatter task. */
@@ -124,8 +152,18 @@ ucc_tl_ucp_bcast_sag_knomial_init(ucc_base_coll_args_t *coll_args,
         ucc_tl_ucp_allgather_knomial_init_r(&args, team, &task, radix), out,
         status);
 
+    if (tl_schedule->sched != NULL) {
+        tl_task         = ucs_derived_of(task, ucc_tl_ucp_task_t);
+        tl_task->flags |= UCC_TL_UCP_TASK_FLAG_SCHEDULED | 
+            UCC_TL_UCP_TASK_FLAG_SCHED_NO_RELEASE;
+        tl_task->sched  = tl_schedule->sched;
+        ev              = UCC_EVENT_SCHEDULE_STARTED;
+    } else {
+        ev = UCC_EVENT_COMPLETED;
+    }
+
     UCC_CHECK_GOTO(ucc_schedule_add_task(schedule, task), out, status);
-    UCC_CHECK_GOTO(ucc_event_manager_subscribe(rs_task, UCC_EVENT_COMPLETED,
+    UCC_CHECK_GOTO(ucc_event_manager_subscribe(rs_task, ev,
                                                task, ucc_task_start_handler),
                    out, status);
 

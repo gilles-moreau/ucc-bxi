@@ -65,7 +65,7 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
             }
         }
         dist /= radix;
-        if (!(task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) && 
+        if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) && 
             UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             task->bcast_kn.dist = dist;
             return;
@@ -76,7 +76,7 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
         return;
     }
 
-    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
         ucc_tl_ucp_delete_sched(task);
     }
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
@@ -88,6 +88,7 @@ out:
 
 ucc_status_t ucc_tl_ucp_bcast_knomial_start(ucc_coll_task_t *coll_task)
 {
+    ucc_status_t status;
     ucc_tl_ucp_task_t *task = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
     ucc_tl_ucp_team_t *team = TASK_TEAM(task);
     ucc_rank_t         size = (ucc_rank_t)task->subset.map.ep_num;
@@ -97,8 +98,7 @@ ucc_status_t ucc_tl_ucp_bcast_knomial_start(ucc_coll_task_t *coll_task)
     ucc_tl_ucp_task_reset(task, UCC_INPROGRESS);
 
     if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
-        task->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
-        ucc_status_t status = ucc_tl_ucp_create_sched(team, task);
+        status = ucc_tl_ucp_create_sched(team, task);
 
         if (status != UCC_OK) {
             return status;

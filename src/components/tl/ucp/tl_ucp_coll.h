@@ -86,7 +86,11 @@ typedef struct ucc_tl_ucp_default_alg_desc {
 
 enum ucc_tl_ucp_task_flags {
     /*indicates whether subset field of tl_ucp_task is set*/
-    UCC_TL_UCP_TASK_FLAG_SUBSET = UCC_BIT(0),
+    UCC_TL_UCP_TASK_FLAG_SUBSET           = UCC_BIT(0),
+    /* indicates that communication for task are being scheduled by UCP. */
+    UCC_TL_UCP_TASK_FLAG_SCHEDULED        = UCC_BIT(1),
+    /* indicates that schedule should not be release after task completion. */
+    UCC_TL_UCP_TASK_FLAG_SCHED_NO_RELEASE = UCC_BIT(2)  
 };
 
 typedef struct ucc_tl_ucp_allreduce_sw_pipeline
@@ -276,6 +280,7 @@ typedef struct ucc_tl_ucp_task {
 typedef struct ucc_tl_ucp_schedule {
     ucc_schedule_pipelined_t super;
     ucc_mc_buffer_header_t  *scratch_mc_header;
+    ucp_sched_h              sched;
 } ucc_tl_ucp_schedule_t;
 
 #define TASK_TEAM(_task)                                                       \

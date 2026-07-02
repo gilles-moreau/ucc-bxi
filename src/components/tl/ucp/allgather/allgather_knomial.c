@@ -169,7 +169,7 @@ UCC_KN_PHASE_EXTRA:
         }
 
     UCC_KN_PHASE_LOOP:
-        if (!(task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) && 
+        if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) && 
             UCC_INPROGRESS == ucc_tl_ucp_test_recv(task)) {
             SAVE_STATE(UCC_KN_PHASE_LOOP);
             return;
@@ -191,7 +191,8 @@ UCC_KN_PHASE_PROXY:
         return;
     }
 
-    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+    if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
+       !(task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_NO_RELEASE)) {
         ucc_tl_ucp_delete_sched(task);
     }
 
@@ -290,9 +291,7 @@ ucc_status_t ucc_tl_ucp_allgather_knomial_start(ucc_coll_task_t *coll_task)
     task->allgather_kn.sbuf = PTR_OFFSET(rbuf, offset);
 
     if (args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
-        task->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
         status = ucc_tl_ucp_create_sched(team, task);
-
         if (status != UCC_OK) {
             return status;
         }

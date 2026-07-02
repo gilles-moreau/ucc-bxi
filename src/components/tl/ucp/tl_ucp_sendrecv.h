@@ -89,14 +89,16 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     req_param.op_attr_mask =
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
-    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
-        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH |
+            UCP_OP_ATTR_FLAG_OP_OFFLOAD;
         req_param.schedh = task->sched;
     }
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.send     = cb;
     req_param.memory_type = ucc_memtype_to_ucs[mtype];
     req_param.user_data   = user_data;
+    req_param.op_attr_mask |= UCP_OP_ATTR_FLAG_FAST_CMPL;
     task->tagged.send_posted++;
     return ucp_tag_send_nbx(ep, buffer, 1, ucp_tag, &req_param);
 }
@@ -156,8 +158,9 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     req_param.op_attr_mask =
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
-    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
-        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH |
+            UCP_OP_ATTR_FLAG_OP_OFFLOAD;
         req_param.schedh = task->sched;
 
     }
@@ -468,17 +471,24 @@ static inline ucc_status_t ucc_tl_ucp_create_sched(ucc_tl_ucp_team_t *team,
                                                    ucc_tl_ucp_task_t *task) {
     ucs_status_t ucp_status;
 
+    /* Check if task has already been scheduled, this happens when multiple 
+     * collectives are scheduled through UCC schedules, eg bcast_sag_knomial. */
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
+        goto out;
+    }
+
     ucp_status = ucp_sched_create(team->worker->ucp_worker, &task->sched);
     if (UCS_OK != ucp_status) {
         if (ucp_status == UCS_ERR_NO_RESOURCE) {
-            /* Offload was requested but no transport supports it, so remove flag. */
-            task->flags &= ~UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
+            /* Offload was requested but no transport supports it. */
             goto out;
         }
         if (UCS_PTR_IS_ERR(ucp_status)) {
             return ucs_status_to_ucc_status(UCS_PTR_STATUS(ucp_status));
         }
     }
+
+    task->flags |= UCC_TL_UCP_TASK_FLAG_SCHEDULED;
 
 out:
     return UCC_OK;

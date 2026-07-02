@@ -115,7 +115,7 @@ void ucc_tl_ucp_allgather_neighbor_progress(ucc_coll_task_t *coll_task)
                                          neighbors[i_parity], team, task),
                       task, out);
 
-        if (!(task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) && 
+        if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) && 
             UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
             return;
         }
@@ -125,7 +125,7 @@ void ucc_tl_ucp_allgather_neighbor_progress(ucc_coll_task_t *coll_task)
         return;
     }
 
-    if (task->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
         ucc_tl_ucp_delete_sched(task);
     }
 
@@ -177,7 +177,6 @@ ucc_status_t ucc_tl_ucp_allgather_neighbor_start(ucc_coll_task_t *coll_task)
     tmpsend = PTR_OFFSET(rbuf, trank * data_size);
 
     if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
-        task->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
         status = ucc_tl_ucp_create_sched(team, task);
 
         if (status != UCC_OK) {

@@ -14,6 +14,7 @@
 #include "tl_ucp_ep.h"
 #include "utils/ucc_compiler_def.h"
 #include "components/mc/base/ucc_mc_base.h"
+#include "tl_ucp_coll.h"
 
 void ucc_tl_ucp_send_completion_cb(void *request, ucs_status_t status,
                                    void *user_data);
@@ -78,6 +79,18 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     ucc_status_t        status;
     ucp_ep_h            ep;
     ucp_tag_t           ucp_tag;
+    ucc_ucx_mem_t      *buf_param;
+    void               *buf;
+    ucc_memory_type_t   mem_type;
+
+    if (mtype == UCC_MEMORY_TYPE_UCX) {
+        buf_param = (ucc_ucx_mem_t *)buffer;
+        buf = buf_param->buf;
+        mem_type = buf_param->mtype;
+    } else {
+        buf = buffer;
+        mem_type = mtype;
+    }
 
     status = ucc_tl_ucp_get_ep(team, dest_group_rank, &ep);
     if (ucc_unlikely(UCC_OK != status)) {
@@ -93,14 +106,22 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
         req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH |
             UCP_OP_ATTR_FLAG_OP_OFFLOAD;
         req_param.schedh = task->sched;
+        if ((mtype == UCC_MEMORY_TYPE_UCX) &&
+            (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)) {
+            if (buf_param->op_attr_mask & UCC_OP_ATTR_FIELD_DEPS) {
+                req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_DEPS;
+                req_param.op_attr_mask |= UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
+                req_param.deps = buf_param->deps;
+                req_param.num_deps = buf_param->num_deps;
+            }
+        }
     }
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.send     = cb;
-    req_param.memory_type = ucc_memtype_to_ucs[mtype];
+    req_param.memory_type = ucc_memtype_to_ucs[mem_type];
     req_param.user_data   = user_data;
-    req_param.op_attr_mask |= UCP_OP_ATTR_FLAG_FAST_CMPL;
     task->tagged.send_posted++;
-    return ucp_tag_send_nbx(ep, buffer, 1, ucp_tag, &req_param);
+    return ucp_tag_send_nbx(ep, buf, 1, ucp_tag, &req_param);
 }
 
 static inline ucc_status_t
@@ -147,6 +168,20 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     ucc_coll_args_t    *args = &TASK_ARGS(task);
     ucp_request_param_t req_param;
     ucp_tag_t           ucp_tag, ucp_tag_mask;
+    ucc_ucx_mem_t      *buf_param;
+    void               *buf;
+    ucc_memory_type_t   mem_type;
+    ucs_status_ptr_t    req;
+    ucp_sched_task_h    sched_task;
+
+    if (mtype == UCC_MEMORY_TYPE_UCX) {
+        buf_param = (ucc_ucx_mem_t *)buffer;
+        buf = buf_param->buf;
+        mem_type = buf_param->mtype;
+    } else {
+        buf = buffer;
+        mem_type = mtype;
+    }
 
     // coverity[result_independent_of_operands:FALSE]
     UCC_TL_UCP_MAKE_RECV_TAG(ucp_tag, ucp_tag_mask,
@@ -172,11 +207,22 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
     req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_EPH;
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.recv     = cb;
-    req_param.memory_type = ucc_memtype_to_ucs[mtype];
+    req_param.memory_type = ucc_memtype_to_ucs[mem_type];
     req_param.user_data   = user_data;
     task->tagged.recv_posted++;
-    return ucp_tag_recv_nbx(team->worker->ucp_worker, buffer, 1, ucp_tag,
+    req = ucp_tag_recv_nbx(team->worker->ucp_worker, buf, 1, ucp_tag,
                             ucp_tag_mask, &req_param);
+    if ((mtype == UCC_MEMORY_TYPE_UCX) &&
+        (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
+        (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT) &&
+        !(UCS_PTR_IS_ERR(req))) {
+        sched_task = ucp_request_get_task(req);
+        if (!UCS_PTR_IS_ERR(sched_task)) {
+            buf_param->op_attr_mask |= UCC_OP_ATTR_FIELD_SCHED_TASK;
+            buf_param->sched_task = sched_task;
+        }
+    }
+    return req;
 }
 
 static inline ucc_status_t
@@ -476,8 +522,14 @@ static inline ucc_status_t ucc_tl_ucp_create_sched(ucc_tl_ucp_team_t *team,
     if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
         goto out;
     }
+    ucp_sched_mode_t mode;
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT) {
+        mode = UCP_SCHED_MODE_EXPLICIT;
+    } else {
+        mode = UCP_SCHED_MODE_IMPLICIT;
+    }
 
-    ucp_status = ucp_sched_create(team->worker->ucp_worker, &task->sched);
+    ucp_status = ucp_sched_create(team->worker->ucp_worker, mode, &task->sched);
     if (UCS_OK != ucp_status) {
         if (ucp_status == UCS_ERR_NO_RESOURCE) {
             /* Offload was requested but no transport supports it. */

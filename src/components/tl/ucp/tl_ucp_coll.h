@@ -90,7 +90,9 @@ enum ucc_tl_ucp_task_flags {
     /* indicates that communication for task are being scheduled by UCP. */
     UCC_TL_UCP_TASK_FLAG_SCHEDULED        = UCC_BIT(1),
     /* indicates that schedule should not be release after task completion. */
-    UCC_TL_UCP_TASK_FLAG_SCHED_NO_RELEASE = UCC_BIT(2)  
+    UCC_TL_UCP_TASK_FLAG_SCHED_NO_RELEASE = UCC_BIT(2),
+    /* indicates that UCP scheduler is in explicit dependency mode. */
+    UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT   = UCC_BIT(3)
 };
 
 typedef struct ucc_tl_ucp_allreduce_sw_pipeline

@@ -16,7 +16,7 @@ private:
     int root;
 public:
     void data_init(int nprocs, ucc_datatype_t dtype, size_t count,
-                   UccCollCtxVec &ctxs, bool persistent)
+                   UccCollCtxVec &ctxs, bool persistent, bool sched_explct)
     {
         ctxs.resize(nprocs);
         for (auto r = 0; r < nprocs; r++) {
@@ -53,8 +53,19 @@ public:
                 coll->mask  |= UCC_COLL_ARGS_FIELD_FLAGS;
                 coll->flags |= UCC_COLL_ARGS_FLAG_PERSISTENT;
             }
+            if (sched_explct) {
+                coll->mask  |= UCC_COLL_ARGS_FIELD_FLAGS;
+                coll->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS |
+                               UCC_COLL_ARGS_FLAG_SCHEDULE_EXPLICIT;
+            }
         }
     }
+
+    void data_init(int nprocs, ucc_datatype_t dtype, size_t count,
+                   UccCollCtxVec &ctxs, bool persistent) {
+        data_init(nprocs, dtype, count, ctxs, persistent, false);
+    }
+
     void reset(UccCollCtxVec ctxs)
     {
         for (auto r = 0; r < ctxs.size(); r++) {
@@ -177,6 +188,32 @@ UCC_TEST_P(test_bcast_0, single_persistent)
     data_fini(ctxs);
 }
 
+UCC_TEST_P(test_bcast_0, single_sched_explct)
+{
+    const int                 team_id  = std::get<0>(GetParam());
+    const ucc_datatype_t      dtype    = std::get<1>(GetParam());
+    const ucc_memory_type_t   mem_type = std::get<2>(GetParam());
+    const int                 count    = std::get<3>(GetParam());
+    const int                 root     = std::get<4>(GetParam());
+    UccTeam_h                 team     = UccJob::getStaticTeams()[team_id];
+    int                       size     = team->procs.size();
+    UccCollCtxVec             ctxs;
+
+    SET_MEM_TYPE(mem_type);
+    if (root == 1){
+        set_root(size/2);
+    } else {
+        set_root(root);
+    }
+
+    data_init(size, dtype, count, ctxs, false, true);
+    UccReq    req(team, ctxs);
+    req.start();
+    req.wait();
+    EXPECT_EQ(true, data_validate(ctxs));
+    data_fini(ctxs);
+}
+
 INSTANTIATE_TEST_CASE_P(
     , test_bcast_0,
     ::testing::Combine(
@@ -217,6 +254,45 @@ UCC_TEST_P(test_bcast_1, multiple)
         set_root(root);
 
         data_init(size, dtype, count, ctx, false);
+        reqs.push_back(UccReq(team, ctx));
+        ctxs.push_back(ctx);
+    }
+    UccReq::startall(reqs);
+    UccReq::waitall(reqs);
+
+    for (auto ctx : ctxs) {
+        EXPECT_EQ(true, data_validate(ctx));
+        data_fini(ctx);
+    }
+}
+
+UCC_TEST_P(test_bcast_1, multiple_sched_explct)
+{
+    const ucc_datatype_t       dtype    = std::get<0>(GetParam());
+    const ucc_memory_type_t    mem_type = std::get<1>(GetParam());
+    const int                  count    = std::get<2>(GetParam());
+    const int                  root     = std::get<3>(GetParam());
+    std::vector<UccReq>        reqs;
+    std::vector<UccCollCtxVec> ctxs;
+
+    for (int tid = 0; tid < UccJob::nStaticTeams; tid++) {
+        UccTeam_h       team = UccJob::getStaticTeams()[tid];
+        int             size = team->procs.size();
+        UccCollCtxVec   ctx;
+
+        if (size == 1 && root > 0) {
+            /* skip team size 1 and root > 0, which are invalid */
+            continue;
+        }
+
+        SET_MEM_TYPE(mem_type);
+        if (root == 1){
+        set_root(size/2);
+        } else {
+            set_root(root);
+        }
+
+        data_init(size, dtype, count, ctx, false, true);
         reqs.push_back(UccReq(team, ctx));
         ctxs.push_back(ctx);
     }

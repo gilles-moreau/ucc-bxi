@@ -9,9 +9,13 @@
 #include "components/tl/ucc_tl.h"
 #include "components/tl/ucc_tl_log.h"
 #include "core/ucc_ee.h"
+#include "ucc/api/ucc.h"
+#include "ucp/api/ucp_def.h"
+#include "utils/ucc_datastruct.h"
 #include "utils/ucc_mpool.h"
 #include "tl_ucp_ep_hash.h"
 #include "schedule/ucc_schedule_pipelined.h"
+#include <stddef.h>
 #include <ucp/api/ucp.h>
 #include <ucs/memory/memory_type.h>
 #include "core/ucc_service_coll.h"
@@ -149,6 +153,26 @@ typedef struct ucc_tl_ucp_team {
 } ucc_tl_ucp_team_t;
 UCC_CLASS_DECLARE(ucc_tl_ucp_team_t, ucc_base_context_t *,
                   const ucc_base_team_params_t *);
+
+typedef struct ucc_ucx_mem {
+    void                       *buf;
+    ucc_memory_type_t           mtype;
+    ucc_tl_ucp_task_t          *task;
+    ucc_tl_ucp_team_t          *team;
+    ucc_rank_t                  rank;
+    ucp_sched_task_h           *deps;
+    size_t                      num_deps;
+    ucp_sched_task_h            sched_task; // out
+    uint32_t                    op_attr_mask; //inout
+} ucc_ucx_mem_t;
+
+typedef enum {
+    UCC_OP_ATTR_FIELD_TASK          = UCC_BIT(0),
+    UCC_OP_ATTR_FIELD_TEAM          = UCC_BIT(1),
+    UCC_OP_ATTR_FIELD_RANK          = UCC_BIT(2),
+    UCC_OP_ATTR_FIELD_DEPS          = UCC_BIT(3),
+    UCC_OP_ATTR_FIELD_SCHED_TASK    = UCC_BIT(4),
+} ucc_ucx_mem_attr_t;
 
 extern ucc_config_field_t ucc_tl_ucp_lib_config_table[];
 

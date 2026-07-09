@@ -190,7 +190,9 @@ AS_IF([test "x$with_docs_only" = xyes],
 
      CHECK_UCX
      AC_MSG_RESULT([UCX support: $ucx_happy])
-     if test $ucx_happy != "yes"; then
+     if test $ucx_happy = "yes"; then
+         mc_modules="${mc_modules}:ucx"
+     else
          AC_MSG_ERROR([UCX is not available])
      fi
 
@@ -245,6 +247,7 @@ AC_CONFIG_FILES([
                  src/components/mc/rocm/Makefile
                  src/components/ec/rocm/Makefile
                  src/components/ec/rocm/kernel/Makefile
+                 src/components/mc/ucx/Makefile
                  test/mpi/Makefile
                  test/gtest/Makefile
                  tools/info/Makefile

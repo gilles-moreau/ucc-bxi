@@ -116,6 +116,7 @@ ucc_tl_ucp_bcast_sag_knomial_init(ucc_base_coll_args_t *coll_args,
     tl_schedule->sched = NULL;
     if (args.args.flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
         ucp_status = ucp_sched_create(tl_team->worker->ucp_worker, 
+                                      UCP_SCHED_MODE_IMPLICIT,
                                       &tl_schedule->sched);
         if (ucp_status != UCS_OK) {
             return ucs_status_to_ucc_status(UCS_PTR_STATUS(ucp_status));

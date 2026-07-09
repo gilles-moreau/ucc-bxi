@@ -8,13 +8,14 @@
 
 using Param_0 = std::tuple<int, ucc_datatype_t, ucc_memory_type_t, gtest_ucc_inplace_t, int>;
 using Param_1 = std::tuple<ucc_datatype_t, ucc_memory_type_t, gtest_ucc_inplace_t, int>;
+using Param_2 = std::tuple<ucc_datatype_t, ucc_memory_type_t, gtest_ucc_inplace_t, int, ucc_job_env_t, int>;
 
 class test_alltoall : public UccCollArgs, public ucc::test
 {
 public:
     void data_init(int nprocs, ucc_datatype_t dtype,
                    size_t single_rank_count, UccCollCtxVec &ctxs,
-                   UccTeam_h team, bool persistent)
+                   UccTeam_h team, bool persistent, bool sched_explct)
     {
         bool  is_onesided = (NULL != team);
         void *sbuf;
@@ -91,13 +92,19 @@ public:
                 coll->mask  |= UCC_COLL_ARGS_FIELD_FLAGS;
                 coll->flags |= UCC_COLL_ARGS_FLAG_PERSISTENT;
             }
+
+            if (sched_explct) {
+                coll->mask  |= UCC_COLL_ARGS_FIELD_FLAGS;
+                coll->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS |
+                               UCC_COLL_ARGS_FLAG_SCHEDULE_EXPLICIT;
+            }
         }
     }
 
     void data_init(int nprocs, ucc_datatype_t dtype, size_t single_rank_count,
                    UccCollCtxVec &ctxs, bool persistent = false)
     {
-        data_init(nprocs, dtype, single_rank_count, ctxs, NULL, persistent);
+        data_init(nprocs, dtype, single_rank_count, ctxs, NULL, persistent, false);
     }
 
     void reset(UccCollCtxVec ctxs)
@@ -238,7 +245,7 @@ UCC_TEST_P(test_alltoall_0, single_onesided)
     team = job.create_team(reference_ranks, true, is_contig, true);
     this->set_inplace(inplace);
     SET_MEM_TYPE(mem_type);
-    data_init(size, dtype, count, ctxs, team, false);
+    data_init(size, dtype, count, ctxs, team, false, false);
     UccReq req(team, ctxs);
     req.start();
     req.wait();
@@ -332,3 +339,57 @@ INSTANTIATE_TEST_CASE_P(
 #endif
         ::testing::Values(/*TEST_INPLACE,*/ TEST_NO_INPLACE),
         ::testing::Values(1,3,8192))); // count
+
+class test_alltoall_alg : public test_alltoall,
+        public ::testing::WithParamInterface<Param_2> {};
+
+UCC_TEST_P(test_alltoall_alg,)
+{
+    const ucc_datatype_t       dtype    = std::get<0>(GetParam());
+    ucc_memory_type_t          mem_type = std::get<1>(GetParam());
+    gtest_ucc_inplace_t        inplace  = std::get<2>(GetParam());
+    const int                  count    = std::get<3>(GetParam());
+    const ucc_job_env_t        env      = std::get<4>(GetParam());
+    const int                  n_procs  = std::get<5>(GetParam());
+    UccJob                     job(n_procs, UccJob::UCC_JOB_CTX_GLOBAL, env);
+    UccTeam_h                  team     = job.create_team(n_procs);
+    std::vector<UccReq>        reqs;
+    std::vector<UccCollCtxVec> ctxs;
+    
+    for (int i = 0; i < n_procs; i++) {
+        UccCollCtxVec ctx;
+
+        SET_MEM_TYPE(mem_type);
+        this->set_inplace(inplace);
+
+        data_init(n_procs, dtype, count, ctx, NULL, false, true);
+        
+        reqs.push_back(UccReq(team, ctx));
+        ctxs.push_back(ctx);
+    }
+
+    UccReq::startall(reqs);
+    UccReq::waitall(reqs);
+
+    for (auto ctx : ctxs) {
+        EXPECT_EQ(true, data_validate(ctx));
+        data_fini(ctx);
+    }
+}
+
+ucc_job_env_t bruck_env = {{"UCC_TL_UCP_TUNE", "alltoall:@bruck"}};
+
+INSTANTIATE_TEST_CASE_P(
+    , test_alltoall_alg,
+    ::testing::Combine(
+        PREDEFINED_DTYPES,
+#ifdef HAVE_CUDA
+        ::testing::Values(UCC_MEMORY_TYPE_HOST, UCC_MEMORY_TYPE_CUDA,
+                          UCC_MEMORY_TYPE_CUDA_MANAGED),
+#else
+        ::testing::Values(UCC_MEMORY_TYPE_HOST),
+#endif
+        ::testing::Values(/*TEST_INPLACE,*/ TEST_NO_INPLACE),
+        ::testing::Values(1,3,8192), // count
+        ::testing::Values(bruck_env), // bruck
+        ::testing::Values(15,16))); // n_procs

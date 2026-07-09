@@ -169,6 +169,8 @@ typedef enum {
  */
 typedef enum ucc_memory_type {
     UCC_MEMORY_TYPE_HOST,         /*!< Default system memory */
+    UCC_MEMORY_TYPE_UCX,          /*!< Default system memory, but the adress points
+                                   * to a @a ucc_ucx_mem_t */
     UCC_MEMORY_TYPE_CUDA,         /*!< NVIDIA CUDA memory */
     UCC_MEMORY_TYPE_CUDA_MANAGED, /*!< NVIDIA CUDA managed memory */
     UCC_MEMORY_TYPE_ROCM,         /*!< AMD ROCM memory */
@@ -1716,8 +1718,10 @@ typedef enum {
                                                             mapped region.
                                                             Useful for one-sided
                                                             collectives. */
-    UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS  = UCC_BIT(8)  /*!< If set, operations will be 
+    UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS  = UCC_BIT(8),  /*!< If set, operations will be 
                                                             scheduled. */
+    UCC_COLL_ARGS_FLAG_SCHEDULE_EXPLICIT    = UCC_BIT(9)  /*!< If set, scheduler mode will be explicit
+                                                            else it wil be impicit */
 } ucc_coll_args_flags_t;
 
 /**

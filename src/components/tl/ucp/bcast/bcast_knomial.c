@@ -8,6 +8,7 @@
 #include "tl_ucp.h"
 #include "bcast.h"
 #include "core/ucc_progress_queue.h"
+#include "tl_ucp_coll.h"
 #include "tl_ucp_sendrecv.h"
 #include "utils/ucc_math.h"
 
@@ -29,6 +30,8 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
     size_t             data_size = TASK_ARGS(task).src.info.count *
                        ucc_dt_size(TASK_ARGS(task).src.info.datatype);
     ucc_rank_t vpeer, peer, vroot_at_level, root_at_level, pos;
+    ucp_sched_task_h dep = NULL;
+    ucc_ucx_mem_t buffer_param;
 
     if (UCC_COLL_ARGS_ACTIVE_SET(&(TASK_ARGS(task)))) {
         root = ucc_ep_map_local_rank(task->subset.map, root);
@@ -48,10 +51,23 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
                     if (vpeer < size) {
                         peer = ucc_ep_map_eval(task->subset.map,
                                                (vpeer + root) % size);
-                        UCPCHECK_GOTO(ucc_tl_ucp_send_nb(buffer, data_size,
-                                                         mtype, peer, team,
-                                                         task),
-                                      task, out);
+                        if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
+                            (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)){
+                            buffer_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
+                            buffer_param.deps = &dep;
+                            buffer_param.num_deps = 1;
+                            buffer_param.buf = buffer;
+                            buffer_param.mtype = mtype;
+                            UCPCHECK_GOTO(ucc_tl_ucp_send_nb(&buffer_param, data_size,
+                                                             UCC_MEMORY_TYPE_UCX, peer, team,
+                                                             task),
+                                        task, out);
+                        } else {
+                            UCPCHECK_GOTO(ucc_tl_ucp_send_nb(buffer, data_size,
+                                                             mtype, peer, team,
+                                                             task),
+                                        task, out);
+                        }
                     }
                 }
             } else {
@@ -59,9 +75,21 @@ void ucc_tl_ucp_bcast_knomial_progress(ucc_coll_task_t *coll_task)
                 root_at_level  = (vroot_at_level + root) % size;
                 peer = ucc_ep_map_eval(task->subset.map,
                                        root_at_level);
-                UCPCHECK_GOTO(ucc_tl_ucp_recv_nb(buffer, data_size, mtype,
-                                                 peer, team, task),
-                              task, out);
+                if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
+                    (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)) {
+                    buffer_param.op_attr_mask = 0;
+                    buffer_param.buf = buffer;
+                    buffer_param.mtype = mtype;
+                    UCPCHECK_GOTO(ucc_tl_ucp_recv_nb(&buffer_param, data_size,
+                                                     UCC_MEMORY_TYPE_UCX,
+                                                     peer, team, task),
+                                  task, out);
+                        dep = (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) ? buffer_param.sched_task : NULL;
+                } else {
+                    UCPCHECK_GOTO(ucc_tl_ucp_recv_nb(buffer, data_size, mtype,
+                                                     peer, team, task),
+                                  task, out);
+                }
             }
         }
         dist /= radix;
@@ -98,6 +126,9 @@ ucc_status_t ucc_tl_ucp_bcast_knomial_start(ucc_coll_task_t *coll_task)
     ucc_tl_ucp_task_reset(task, UCC_INPROGRESS);
 
     if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_EXPLICIT) {
+            task->flags |= UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT;
+        }
         status = ucc_tl_ucp_create_sched(team, task);
 
         if (status != UCC_OK) {

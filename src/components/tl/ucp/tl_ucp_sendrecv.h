@@ -6,6 +6,12 @@
  */
 
 #include "config.h"
+#include "tl_ucp.h"
+#include "ucc/api/ucc.h"
+#include "ucc/api/ucc_status.h"
+#include "ucp/api/ucp.h"
+#include "ucp/api/ucp_def.h"
+#include "ucs/type/status.h"
 
 #ifndef UCC_TL_UCP_SENDRECV_H_
 #define UCC_TL_UCP_SENDRECV_H_
@@ -76,12 +82,15 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
 {
     ucc_coll_args_t    *args = &TASK_ARGS(task);
     ucp_request_param_t req_param;
+    ucp_deps_param_t    deps_param;
     ucc_status_t        status;
     ucp_ep_h            ep;
     ucp_tag_t           ucp_tag;
     ucc_ucx_mem_t      *buf_param;
     void               *buf;
     ucc_memory_type_t   mem_type;
+    ucs_status_ptr_t    req;
+    ucp_sched_task_h    sched_task;
 
     if (mtype == UCC_MEMORY_TYPE_UCX) {
         buf_param = (ucc_ucx_mem_t *)buffer;
@@ -103,25 +112,39 @@ ucc_tl_ucp_send_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
     if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
-        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH |
-            UCP_OP_ATTR_FLAG_OP_OFFLOAD;
+        // req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH |
+        //     UCP_OP_ATTR_FLAG_OP_OFFLOAD;
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
         req_param.schedh = task->sched;
+        deps_param.attr_mask = 0;
         if ((mtype == UCC_MEMORY_TYPE_UCX) &&
             (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)) {
             if (buf_param->op_attr_mask & UCC_OP_ATTR_FIELD_DEPS) {
-                req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_DEPS;
                 req_param.op_attr_mask |= UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
-                req_param.deps = buf_param->deps;
-                req_param.num_deps = buf_param->num_deps;
+                deps_param.attr_mask |= UCP_DEPS_ATTR_FIELD_DEPS;
+                deps_param.deps = buf_param->deps;
+                deps_param.num_deps = buf_param->num_deps;
             }
         }
+        req_param.deps = &deps_param;
     }
     req_param.datatype    = ucp_dt_make_contig(msglen);
     req_param.cb.send     = cb;
     req_param.memory_type = ucc_memtype_to_ucs[mem_type];
     req_param.user_data   = user_data;
     task->tagged.send_posted++;
-    return ucp_tag_send_nbx(ep, buf, 1, ucp_tag, &req_param);
+    req =  ucp_tag_send_nbx(ep, buf, 1, ucp_tag, &req_param);
+    if ((mtype == UCC_MEMORY_TYPE_UCX) &&
+        (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
+        (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT) &&
+        !(UCS_PTR_IS_ERR(req))) {
+        sched_task = ucp_request_get_task(req);
+        if (!UCS_PTR_IS_ERR(sched_task)) {
+            buf_param->op_attr_mask |= UCC_OP_ATTR_FIELD_SCHED_TASK;
+            buf_param->sched_task = sched_task;
+        }
+    }
+    return req;
 }
 
 static inline ucc_status_t
@@ -194,8 +217,9 @@ ucc_tl_ucp_recv_common(void *buffer, size_t msglen, ucc_memory_type_t mtype,
         UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_DATATYPE |
         UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_MEMORY_TYPE;
     if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
-        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH |
-            UCP_OP_ATTR_FLAG_OP_OFFLOAD;
+        // req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH |
+        //     UCP_OP_ATTR_FLAG_OP_OFFLOAD;
+        req_param.op_attr_mask |= UCP_OP_ATTR_FIELD_SCHEDH;
         req_param.schedh = task->sched;
 
     }
@@ -560,3 +584,20 @@ static inline void ucc_tl_ucp_delete_sched(ucc_tl_ucp_task_t *task) {
     } while (0)
 
 #endif
+
+static inline ucc_status_t
+ucc_tl_ucp_memcpy_nb(void *dst_buffer, ucc_memory_type_t dst_mtype,
+                     void *src_buffer, ucc_memory_type_t src_mtype,
+                     size_t msglen,
+                     ucc_rank_t dest_group_rank, ucc_tl_ucp_team_t *team,
+                     ucc_tl_ucp_task_t *task) {
+    ucc_status_t status;
+    // schedule recv first
+    status = ucc_tl_ucp_recv_nb(dst_buffer, msglen, UCC_MEMORY_TYPE_UCX, dest_group_rank, team, task);
+    
+    if (status != UCC_OK) {
+        return status;
+    }
+    // schedule send
+    return ucc_tl_ucp_send_nb(src_buffer, msglen, src_mtype, dest_group_rank, team, task);
+}

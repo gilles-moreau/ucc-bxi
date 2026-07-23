@@ -11,8 +11,10 @@
 #include "components/mc/ucc_mc.h"
 #include "coll_patterns/bruck_alltoall.h"
 #include "ucc/api/ucc.h"
+#include "ucp/api/ucp.h"
 #include "ucp/api/ucp_def.h"
 #include <stddef.h>
+#include <stdlib.h>
 
 #define RADIX 2
 #define SAVE_STATE(_phase)                                                     \
@@ -23,6 +25,7 @@
 enum {
     PHASE_MERGE,
     PHASE_SENDRECV,
+    PHASE_SCHEDULED,
     PHASE_BCOPY
 };
 
@@ -68,15 +71,12 @@ ucc_status_t ucc_tl_ucp_alltoall_bruck_backward_rotation(void *dst,
                                                          ucc_rank_t tsize,
                                                          size_t seg_size, 
                                                          ucc_tl_ucp_task_t *task,
-                                                         ucc_tl_ucp_team_t *team,
-                                                         ucp_sched_task_h *dep)
+                                                         ucc_tl_ucp_team_t *team)
 {
     ucc_status_t st;
     ucc_rank_t index, level, nsegs_per_rblock;
     size_t snd_offset;
     int send_buffer_index;
-    ucc_ucx_mem_t dst_param;
-    ucc_ucx_mem_t src_param;
 
     level = lognum(tsize);
     nsegs_per_rblock = tsize / 2;
@@ -84,38 +84,10 @@ ucc_status_t ucc_tl_ucp_alltoall_bruck_backward_rotation(void *dst,
         send_buffer_index = find_seg_index(index, level + 1, nsegs_per_rblock);
         ucc_assert(send_buffer_index >= 0);
         snd_offset = send_buffer_index * seg_size;
-        if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
-            (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)){
-            // src encapsulation
-            src_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
-            src_param.deps = dep;
-            src_param.num_deps = 1;
-            src_param.buf = PTR_OFFSET(src, snd_offset);
-            src_param.mtype = UCC_MEMORY_TYPE_HOST;
-
-            // dst encapsulation
-            dst_param.op_attr_mask = UCC_OP_ATTR_FIELD_TASK |
-                                    UCC_OP_ATTR_FIELD_TEAM |
-                                    UCC_OP_ATTR_FIELD_RANK;
-            dst_param.buf = PTR_OFFSET(dst, seg_size *
-                                       ((trank - index + tsize) % tsize));
-            dst_param.mtype = UCC_MEMORY_TYPE_HOST;
-            dst_param.task = task;
-            dst_param.team = team;
-            dst_param.rank = trank;
-
-            // schedule/offload memcpy
-            st = ucc_mc_memcpy(&dst_param,
-                               &src_param, seg_size,
-                               UCC_MEMORY_TYPE_UCX, UCC_MEMORY_TYPE_UCX);
-            *dep = (dst_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) ?
-                  dst_param.sched_task : NULL;
-        } else {
-            st = ucc_mc_memcpy(PTR_OFFSET(dst, seg_size *
-                                              ((trank - index + tsize) % tsize)),
-                               PTR_OFFSET(src, snd_offset), seg_size,
-                               UCC_MEMORY_TYPE_HOST, UCC_MEMORY_TYPE_HOST);
-        }
+        st = ucc_mc_memcpy(PTR_OFFSET(dst, seg_size *
+                                            ((trank - index + tsize) % tsize)),
+                            PTR_OFFSET(src, snd_offset), seg_size,
+                            UCC_MEMORY_TYPE_HOST, UCC_MEMORY_TYPE_HOST);
         if (ucc_unlikely(st != UCC_OK)) {
             return st;
         }
@@ -167,8 +139,21 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
     ucc_status_t status;
     ucc_ee_executor_t *exec;
     ucc_ee_executor_task_args_t eargs;
-    ucp_sched_task_h dep = NULL;
     ucc_ucx_mem_t buffer_param;
+    ucc_ucx_mem_t src_param;
+    ucc_ucx_mem_t dst_param;
+    ucp_deps_param_t deps_param;
+    ucp_deps_param_t tmp_deps_param;
+    deps_param.deps = malloc(tsize*sizeof(ucp_sched_task_h));
+    // TODO free deps at the end of the function
+    deps_param.num_deps = 0;
+    deps_param.attr_mask = UCP_DEPS_ATTR_FIELD_DEPS;
+
+    tmp_deps_param.deps = malloc(tsize*sizeof(ucp_sched_task_h));
+    // TODO free deps at the end of the function
+    tmp_deps_param.num_deps = 0;
+    tmp_deps_param.attr_mask = UCP_DEPS_ATTR_FIELD_DEPS;
+
 
     EXEC_TASK_TEST(task->alltoall_bruck.phase,
                    "failed to copy data from user buffer to scratch",
@@ -176,6 +161,8 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
     switch (task->alltoall_bruck.phase) {
     case PHASE_SENDRECV:
         goto ALLTOALL_BRUCK_PHASE_SENDRECV;
+    case PHASE_SCHEDULED:
+        goto ALLTOALL_BRUCK_PHASE_SCHEDULED;
     case PHASE_BCOPY:
         task->super.status = UCC_OK;
         goto out;
@@ -200,19 +187,24 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
             }
             if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
                 (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)){
-                buffer_param.op_attr_mask = UCC_OP_ATTR_FIELD_TASK |
-                                            UCC_OP_ATTR_FIELD_TEAM |
-                                            UCC_OP_ATTR_FIELD_RANK;
-                buffer_param.buf = PTR_OFFSET(mergebuf, seg_size * snd_count);
-                buffer_param.mtype = UCC_MEMORY_TYPE_HOST;
-                buffer_param.task = task;
-                buffer_param.team = team;
-                buffer_param.rank = trank;
-                status = ucc_mc_memcpy(&buffer_param,
-                                        data, seg_size, UCC_MEMORY_TYPE_UCX,
-                                        UCC_MEMORY_TYPE_HOST);
-                dep = (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) ?
-                      buffer_param.sched_task : NULL;
+                /* Prepare dst structure */
+                dst_param.buf = PTR_OFFSET(mergebuf, seg_size * snd_count);
+                dst_param.mtype = UCC_MEMORY_TYPE_HOST;
+
+                /* Prepare src structure */
+                src_param.buf = data;
+                src_param.mtype = UCC_MEMORY_TYPE_HOST;
+                src_param.deps = deps_param.deps;
+                src_param.num_deps = deps_param.num_deps;
+                src_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
+                
+                /* Schedule memcpy operation */
+                status = ucc_tl_ucp_memcpy_nb(&dst_param, UCC_MEMORY_TYPE_UCX, &src_param, UCC_MEMORY_TYPE_UCX, seg_size, trank, team, task);
+
+                /* Get back the scheduled task to be added as dependency */
+                if (dst_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) {
+                    tmp_deps_param.deps[tmp_deps_param.num_deps++] = dst_param.sched_task;
+                }
             } else {
                 status = ucc_mc_memcpy(PTR_OFFSET(mergebuf, seg_size * snd_count),
                                         data, seg_size, UCC_MEMORY_TYPE_HOST,
@@ -220,22 +212,33 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
             }
             if (ucc_unlikely(UCC_OK != status)) {
                 task->super.status = status;
-                return;
+                goto out;
             }
             snd_count++;
         }
+
+        /* Update dependencies */
+        deps_param.num_deps =0;
+        for (int i=0; i<tmp_deps_param.num_deps; i++) {
+            deps_param.deps[deps_param.num_deps++] = tmp_deps_param.deps[i];
+        }
+        tmp_deps_param.num_deps = 0;
+
         data = PTR_OFFSET(scratch, level * nrecv_segs * seg_size);
         if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
             (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)){
             buffer_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
-            buffer_param.deps = &dep;
-            buffer_param.num_deps = 1;
+            buffer_param.deps = deps_param.deps;
+            buffer_param.num_deps = deps_param.num_deps;
             buffer_param.buf = mergebuf;
             buffer_param.mtype = UCC_MEMORY_TYPE_HOST;
             UCPCHECK_GOTO(ucc_tl_ucp_send_nb(&buffer_param, snd_count * seg_size,
                                              UCC_MEMORY_TYPE_UCX, sendto, team,
                                              task),
                           task, out);
+            if (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) {
+                tmp_deps_param.deps[tmp_deps_param.num_deps++] = buffer_param.sched_task;
+            }
         } else {
             UCPCHECK_GOTO(ucc_tl_ucp_send_nb(mergebuf, snd_count * seg_size,
                                              UCC_MEMORY_TYPE_HOST, sendto, team,
@@ -251,56 +254,53 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
                                              UCC_MEMORY_TYPE_UCX, recvfrom, team,
                                              task),
                           task, out);
-            dep = (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) ?
-                  buffer_param.sched_task : NULL;
+            if (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) {
+                tmp_deps_param.deps[tmp_deps_param.num_deps++] = buffer_param.sched_task;
+            }
         } else {
             UCPCHECK_GOTO(ucc_tl_ucp_recv_nb(data, snd_count * seg_size,
                                              UCC_MEMORY_TYPE_HOST, recvfrom, team,
                                              task),
                           task, out);
         }
+
+        /* Update dependencies */
+        deps_param.num_deps =0;
+        for (int i=0; i<tmp_deps_param.num_deps; i++) {
+            deps_param.deps[deps_param.num_deps++] = tmp_deps_param.deps[i];
+        }
+        tmp_deps_param.num_deps = 0;
         
 ALLTOALL_BRUCK_PHASE_SENDRECV:
         if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
         ucc_tl_ucp_test(task) == UCC_INPROGRESS) {
             SAVE_STATE(PHASE_SENDRECV);
-            return;
+            goto out;
         }
         task->alltoall_bruck.iteration++;
         step = 1 << (task->alltoall_bruck.iteration - 1);
     }
-    if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
-        (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)){
-        buffer_param.op_attr_mask = UCC_OP_ATTR_FIELD_TASK |
-                                    UCC_OP_ATTR_FIELD_TEAM |
-                                    UCC_OP_ATTR_FIELD_RANK;
-        buffer_param.buf = PTR_OFFSET(mergebuf, seg_size * snd_count);
-        buffer_param.mtype = UCC_MEMORY_TYPE_HOST;
-        buffer_param.task = task;
-        buffer_param.team = team;
-        buffer_param.rank = trank;
-        status = ucc_mc_memcpy(&buffer_param,
-                            PTR_OFFSET(task->alltoall_bruck.src, trank * seg_size),
-                            seg_size, UCC_MEMORY_TYPE_UCX, UCC_MEMORY_TYPE_HOST);
-        dep = (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) ?
-                buffer_param.sched_task : NULL;
-    } else {
-        status = ucc_mc_memcpy(PTR_OFFSET(task->alltoall_bruck.dst, trank * seg_size),
-                            PTR_OFFSET(task->alltoall_bruck.src, trank * seg_size),
-                            seg_size, UCC_MEMORY_TYPE_HOST, UCC_MEMORY_TYPE_HOST);
-    }
+ALLTOALL_BRUCK_PHASE_SCHEDULED:
+     if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
+        ucc_tl_ucp_test(task) == UCC_INPROGRESS) {
+            SAVE_STATE(PHASE_SCHEDULED);
+            goto out;
+        }
+    
+    status = ucc_mc_memcpy(PTR_OFFSET(task->alltoall_bruck.dst, trank * seg_size),
+                        PTR_OFFSET(task->alltoall_bruck.src, trank * seg_size),
+                        seg_size, UCC_MEMORY_TYPE_HOST, UCC_MEMORY_TYPE_HOST);
     if (ucc_unlikely(status != UCC_OK)) {
         task->super.status = status;
-        return;
+        goto out;
     }
     status = ucc_tl_ucp_alltoall_bruck_backward_rotation(mergebuf, scratch,
                                                          trank, tsize,
                                                          seg_size, 
-                                                         task, team,
-                                                         &dep);
+                                                         task, team);
     if (ucc_unlikely(status != UCC_OK)) {
         task->super.status = status;
-        return;
+        goto out;
     }
 
     if (smtype != UCC_MEMORY_TYPE_HOST || dmtype != UCC_MEMORY_TYPE_HOST) {
@@ -308,7 +308,7 @@ ALLTOALL_BRUCK_PHASE_SENDRECV:
         status = ucc_coll_task_get_executor(&task->super, &exec);
         if (ucc_unlikely(status != UCC_OK)) {
             task->super.status = status;
-            return;
+            goto out;
         }
 
         eargs.task_type = UCC_EE_EXECUTOR_TASK_COPY;
@@ -319,7 +319,7 @@ ALLTOALL_BRUCK_PHASE_SENDRECV:
                                            &task->alltoall_bruck.etask);
         if (ucc_unlikely(status != UCC_OK)) {
             task->super.status = status;
-            return;
+            goto out;
         }
         EXEC_TASK_TEST(PHASE_BCOPY, "failed to copy data to user buffer",
                        task->alltoall_bruck.etask);
@@ -327,7 +327,8 @@ ALLTOALL_BRUCK_PHASE_SENDRECV:
 
     task->super.status = UCC_OK;
 out:
-    return;
+    free(tmp_deps_param.deps);
+    free(deps_param.deps);
 }
 
 ucc_status_t ucc_tl_ucp_alltoall_bruck_start(ucc_coll_task_t *coll_task)

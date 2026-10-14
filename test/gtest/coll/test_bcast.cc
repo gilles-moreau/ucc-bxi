@@ -55,8 +55,7 @@ public:
             }
             if (sched_explct) {
                 coll->mask  |= UCC_COLL_ARGS_FIELD_FLAGS;
-                coll->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS |
-                               UCC_COLL_ARGS_FLAG_SCHEDULE_EXPLICIT;
+                coll->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
             }
         }
     }

@@ -13,6 +13,7 @@
 #include "ucc/api/ucc.h"
 #include "ucp/api/ucp.h"
 #include "ucp/api/ucp_def.h"
+#include "utils/ucc_malloc.h"
 #include <stddef.h>
 #include <stdlib.h>
 
@@ -28,6 +29,17 @@ enum {
     PHASE_SCHEDULED,
     PHASE_BCOPY
 };
+
+enum {
+    ALLTOALL_BRUCK_SEND_TASK = UCC_BIT(0),
+    ALLTOALL_BRUCK_RECV_TASK = UCC_BIT(1),
+};
+
+typedef struct {
+    unsigned            attr_mask;
+    int                 num_deps;
+    ucp_sched_task_h    sendrecv[2];
+} a2a_bruck_sendrecv_tasks_t;
 
 static inline int msb_pos_for_level(unsigned int nthbit, ucc_rank_t number)
 {
@@ -139,21 +151,40 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
     ucc_status_t status;
     ucc_ee_executor_t *exec;
     ucc_ee_executor_task_args_t eargs;
-    ucc_ucx_mem_t buffer_param;
-    ucc_ucx_mem_t src_param;
-    ucc_ucx_mem_t dst_param;
-    ucp_deps_param_t deps_param;
-    ucp_deps_param_t tmp_deps_param;
-    deps_param.deps = malloc(tsize*sizeof(ucp_sched_task_h));
-    // TODO free deps at the end of the function
-    deps_param.num_deps = 0;
-    deps_param.attr_mask = UCP_DEPS_ATTR_FIELD_DEPS;
-
-    tmp_deps_param.deps = malloc(tsize*sizeof(ucp_sched_task_h));
-    // TODO free deps at the end of the function
-    tmp_deps_param.num_deps = 0;
-    tmp_deps_param.attr_mask = UCP_DEPS_ATTR_FIELD_DEPS;
-
+    ucc_ucx_mem_t buffer_param = {
+        .op_attr_mask   = 0,
+        .mtype          = UCC_MEMORY_TYPE_UNKNOWN,
+        .buf            = NULL,
+        .num_deps       = 0,
+        .deps           = NULL,
+        .sched_task     = NULL
+    };
+    ucc_ucx_mem_t src_param = {
+        .op_attr_mask   = 0,
+        .mtype          = UCC_MEMORY_TYPE_UNKNOWN,
+        .buf            = NULL,
+        .num_deps       = 0,
+        .deps           = NULL,
+        .sched_task     = NULL
+    };
+    ucc_ucx_mem_t dst_param = {
+        .op_attr_mask   = 0,
+        .mtype          = UCC_MEMORY_TYPE_UNKNOWN,
+        .buf            = NULL,
+        .num_deps       = 0,
+        .deps           = NULL,
+        .sched_task     = NULL
+    };
+    a2a_bruck_sendrecv_tasks_t sendrecv_tasks = {
+        .attr_mask = 0,
+        .num_deps = 0,
+        .sendrecv = {NULL, NULL}
+    };
+    ucp_deps_param_t memcpy_tasks = {
+        .num_deps = 0,
+        .deps = ucc_malloc(((tsize+1)/2)*sizeof(ucp_sched_task_h))
+    };
+    ucc_rank_t nb_mcpy = 0;
 
     EXEC_TASK_TEST(task->alltoall_bruck.phase,
                    "failed to copy data from user buffer to scratch",
@@ -185,26 +216,47 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
             } else {
                 data = PTR_OFFSET(scratch, send_buffer_index * seg_size);
             }
-            if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
-                (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)){
-                /* Prepare dst structure */
-                dst_param.buf = PTR_OFFSET(mergebuf, seg_size * snd_count);
-                dst_param.mtype = UCC_MEMORY_TYPE_HOST;
+            if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
+                if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT){
+                    /* Explicit Scheduler mode */
+                    /* Prepare dst structure */
+                    dst_param.buf = PTR_OFFSET(mergebuf, seg_size * snd_count);
+                    dst_param.mtype = UCC_MEMORY_TYPE_HOST;
 
-                /* Prepare src structure */
-                src_param.buf = data;
-                src_param.mtype = UCC_MEMORY_TYPE_HOST;
-                src_param.deps = deps_param.deps;
-                src_param.num_deps = deps_param.num_deps;
-                src_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
-                
-                /* Schedule memcpy operation */
-                status = ucc_tl_ucp_memcpy_nb(&dst_param, UCC_MEMORY_TYPE_UCX, &src_param, UCC_MEMORY_TYPE_UCX, seg_size, trank, team, task);
+                    /* Prepare src structure */
+                    src_param.buf = data;
+                    src_param.mtype = UCC_MEMORY_TYPE_HOST;
+                    src_param.deps = sendrecv_tasks.sendrecv;
+                    if ((sendrecv_tasks.attr_mask & ALLTOALL_BRUCK_RECV_TASK) && 
+                        (send_buffer_index >=0) && 
+                        (((level-1)*nrecv_segs) <= send_buffer_index)) {
+                        /* memcpy depends on recv task */
+                        src_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
+                        src_param.deps = &src_param.deps[(sendrecv_tasks.attr_mask & ALLTOALL_BRUCK_SEND_TASK ? 0 : 1)];
+                        src_param.num_deps = sendrecv_tasks.attr_mask & ALLTOALL_BRUCK_SEND_TASK ? 2 : 1;
+                    } else if (sendrecv_tasks.attr_mask & ALLTOALL_BRUCK_SEND_TASK) {
+                        /* memcpy doesn't depend on recv task but depends on existing send task */
+                        src_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
+                        src_param.deps = src_param.deps;
+                        src_param.num_deps = 1;
+                    } /* else there is no dependency for this memcpy operation */
+                    
+                    /* Schedule memcpy operation */
+                    status = ucc_tl_ucp_memcpy_nb(&dst_param, UCC_MEMORY_TYPE_UCX, 
+                                                  &src_param, UCC_MEMORY_TYPE_UCX,
+                                                  seg_size, trank, nb_mcpy, team, task);
 
-                /* Get back the scheduled task to be added as dependency */
-                if (dst_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) {
-                    tmp_deps_param.deps[tmp_deps_param.num_deps++] = dst_param.sched_task;
+                    /* Get back the scheduled task to be added as dependency */
+                    if (dst_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) {
+                        memcpy_tasks.deps[memcpy_tasks.num_deps++] = dst_param.sched_task;
+                    }
+                } else { 
+                    /* Implicit Scheduler mode */
+                    status = ucc_tl_ucp_memcpy_nb(PTR_OFFSET(mergebuf, seg_size * snd_count), UCC_MEMORY_TYPE_HOST,
+                                                  data, UCC_MEMORY_TYPE_HOST,
+                                                  seg_size, trank, nb_mcpy, team, task);
                 }
+                nb_mcpy++;
             } else {
                 status = ucc_mc_memcpy(PTR_OFFSET(mergebuf, seg_size * snd_count),
                                         data, seg_size, UCC_MEMORY_TYPE_HOST,
@@ -217,19 +269,16 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
             snd_count++;
         }
 
-        /* Update dependencies */
-        deps_param.num_deps =0;
-        for (int i=0; i<tmp_deps_param.num_deps; i++) {
-            deps_param.deps[deps_param.num_deps++] = tmp_deps_param.deps[i];
-        }
-        tmp_deps_param.num_deps = 0;
+        /* Reset sendrecv tasks */
+        sendrecv_tasks.attr_mask = 0;
+        sendrecv_tasks.num_deps = 0;
 
         data = PTR_OFFSET(scratch, level * nrecv_segs * seg_size);
         if ((task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
             (task->flags & UCC_TL_UCP_TASK_FLAG_SCHED_EXPLICIT)){
             buffer_param.op_attr_mask = UCC_OP_ATTR_FIELD_DEPS;
-            buffer_param.deps = deps_param.deps;
-            buffer_param.num_deps = deps_param.num_deps;
+            buffer_param.deps = memcpy_tasks.deps;
+            buffer_param.num_deps = memcpy_tasks.num_deps;
             buffer_param.buf = mergebuf;
             buffer_param.mtype = UCC_MEMORY_TYPE_HOST;
             UCPCHECK_GOTO(ucc_tl_ucp_send_nb(&buffer_param, snd_count * seg_size,
@@ -237,7 +286,8 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
                                              task),
                           task, out);
             if (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) {
-                tmp_deps_param.deps[tmp_deps_param.num_deps++] = buffer_param.sched_task;
+                sendrecv_tasks.sendrecv[0] = buffer_param.sched_task;
+                sendrecv_tasks.attr_mask |= ALLTOALL_BRUCK_SEND_TASK;
             }
         } else {
             UCPCHECK_GOTO(ucc_tl_ucp_send_nb(mergebuf, snd_count * seg_size,
@@ -255,7 +305,8 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
                                              task),
                           task, out);
             if (buffer_param.op_attr_mask & UCC_OP_ATTR_FIELD_SCHED_TASK) {
-                tmp_deps_param.deps[tmp_deps_param.num_deps++] = buffer_param.sched_task;
+                sendrecv_tasks.sendrecv[1] = buffer_param.sched_task;
+                sendrecv_tasks.attr_mask |= ALLTOALL_BRUCK_RECV_TASK;
             }
         } else {
             UCPCHECK_GOTO(ucc_tl_ucp_recv_nb(data, snd_count * seg_size,
@@ -264,12 +315,8 @@ void ucc_tl_ucp_alltoall_bruck_progress(ucc_coll_task_t *coll_task)
                           task, out);
         }
 
-        /* Update dependencies */
-        deps_param.num_deps =0;
-        for (int i=0; i<tmp_deps_param.num_deps; i++) {
-            deps_param.deps[deps_param.num_deps++] = tmp_deps_param.deps[i];
-        }
-        tmp_deps_param.num_deps = 0;
+        /* Reset memcpy_tasks */
+        memcpy_tasks.num_deps = 0;
         
 ALLTOALL_BRUCK_PHASE_SENDRECV:
         if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) &&
@@ -327,8 +374,7 @@ ALLTOALL_BRUCK_PHASE_SCHEDULED:
 
     task->super.status = UCC_OK;
 out:
-    free(tmp_deps_param.deps);
-    free(deps_param.deps);
+    ucc_free(memcpy_tasks.deps);
 }
 
 ucc_status_t ucc_tl_ucp_alltoall_bruck_start(ucc_coll_task_t *coll_task)

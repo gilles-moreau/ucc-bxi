@@ -19,7 +19,6 @@ ucc_config_field_t ucc_mc_config_table[] = {
 
 const char *ucc_memory_type_names[] = {
     [UCC_MEMORY_TYPE_HOST]         = "host",
-    [UCC_MEMORY_TYPE_UCX]          = "ucx",
     [UCC_MEMORY_TYPE_CUDA]         = "cuda",
     [UCC_MEMORY_TYPE_CUDA_MANAGED] = "cuda-managed",
     [UCC_MEMORY_TYPE_ROCM]         = "rocm",

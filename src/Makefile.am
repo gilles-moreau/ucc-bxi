@@ -9,6 +9,10 @@ cl_dirs = components/cl/basic \
 mc_dirs = components/mc/cpu
 ec_dirs = components/ec/cpu
 
+if TL_UCP_ENABLED
+ec_dirs += components/ec/ucp
+endif
+
 if HAVE_CUDA
 mc_dirs += components/mc/cuda
 ec_dirs += components/ec/cuda

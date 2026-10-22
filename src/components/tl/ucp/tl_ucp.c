@@ -246,6 +246,11 @@ static ucs_config_field_t ucc_tl_ucp_context_config_table[] = {
      ucc_offsetof(ucc_tl_ucp_context_config_t, service_throttling_thresh),
      UCC_CONFIG_TYPE_UINT},
 
+    {"ENABLE_REDUCE", "0",
+     "Enable ucp to perform reduce operation by setting UCP_FEATURE_VAMO flag",
+     ucc_offsetof(ucc_tl_ucp_context_config_t, enable_reduce),
+     UCC_CONFIG_TYPE_UINT},
+
     {NULL}};
 
 UCC_CLASS_DEFINE_NEW_FUNC(ucc_tl_ucp_lib_t, ucc_base_lib_t,

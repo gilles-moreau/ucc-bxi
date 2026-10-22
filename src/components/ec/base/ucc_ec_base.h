@@ -200,6 +200,7 @@ typedef struct ucc_ec_base {
     ucc_ec_config_t                *config;
     ucc_config_global_list_entry_t  config_table;
     ucc_status_t                   (*init)(const ucc_ec_params_t *ec_params);
+    ucc_status_t                   (*attach)(ucc_context_h ctx);
     ucc_status_t                   (*get_attr)(ucc_ec_attr_t *ec_attr);
     ucc_status_t                   (*finalize)();
     ucc_ec_ops_t                    ops;

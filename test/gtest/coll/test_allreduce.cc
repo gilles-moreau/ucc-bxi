@@ -155,8 +155,12 @@ class test_allreduce_host : public test_allreduce<T> {};
 template<typename T>
 class test_allreduce_cuda : public test_allreduce<T> {};
 
+template<typename T>
+class test_allreduce_ucp : public test_allreduce<T> {};
+
 TYPED_TEST_CASE(test_allreduce_host, CollReduceTypeOpsHost);
 TYPED_TEST_CASE(test_allreduce_cuda, CollReduceTypeOpsCuda);
+TYPED_TEST_CASE(test_allreduce_ucp, CollReduceTypeOpsUcp);
 
 #define TEST_DECLARE(_mem_type, _inplace, _repeat, _persistent)                \
     {                                                                          \
@@ -198,6 +202,40 @@ TYPED_TEST(test_allreduce_host, single_persistent_inplace)
 {
     TEST_DECLARE(UCC_MEMORY_TYPE_HOST, TEST_INPLACE, 3, 1);
 }
+
+#ifdef HAVE_UCX 
+TYPED_TEST(test_allreduce_ucp, single)
+{
+    int           n_procs = 15;
+    ucc_job_env_t env     = {{"UCC_CL_BASIC_TUNE", "inf"},
+        {"UCC_TL_UCP_TUNE", "allreduce:@knomial:inf"},
+        {"UCC_TL_UCP_ENABLE_REDUCE", "1"}};
+    UccJob        job(n_procs, UccJob::UCC_JOB_CTX_GLOBAL, env);
+    UccTeam_h     team   = job.create_team(n_procs);
+    int           repeat = 1;
+    UccCollCtxVec ctxs;                                            
+
+    std::array<int, 2> counts{4, 256};                              
+    for (int count : counts) {                                         
+        int           size = team->procs.size();                       
+        SET_MEM_TYPE(UCC_MEMORY_TYPE_HOST);                                       
+        this->set_inplace(TEST_NO_INPLACE);                                   
+        this->data_init(size, TypeParam::dt, count, ctxs, false);
+        /* Add schedule flag to enforce UCP ec for reduce. */
+        for (int r = 0; r < size; r++) {
+            ctxs[r]->args->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
+        }
+        UccReq req(team, ctxs);                                        
+        for (auto i = 0; i < repeat; i++) {                           
+            req.start();                                               
+            req.wait();                                                
+            EXPECT_EQ(true, this->data_validate(ctxs));                
+            this->reset(ctxs);                                         
+        }                                                              
+        this->data_fini(ctxs);                                         
+    }                                                                  
+}
+#endif
 
 #ifdef HAVE_CUDA
 TYPED_TEST(test_allreduce_cuda, single) {

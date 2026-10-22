@@ -273,7 +273,13 @@ UCC_CORE_PROFILE_FUNC(ucc_status_t, ucc_collective_init,
             goto coll_finalize;
         }
         params.mask    = UCC_EE_EXECUTOR_PARAM_FIELD_TYPE;
-        params.ee_type = coll_ee_type;
+        //TODO: use other flag to specify the use of ee ucp because using it does 
+        //      not necessarily mean operations are scheduled.
+        if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+            params.ee_type = UCC_EE_UCP;
+        } else {
+            params.ee_type = coll_ee_type;
+        }
         status = ucc_ee_executor_init(&params, &task->executor);
         if (UCC_OK != status) {
             ucc_error("failed to init executor: %s", ucc_status_string(status));

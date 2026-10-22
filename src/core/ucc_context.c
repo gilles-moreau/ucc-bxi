@@ -836,6 +836,11 @@ ucc_status_t ucc_context_create_proc_info(ucc_lib_h                   lib,
         goto error_ctx_create_epilog;
     }
 
+    status = ucc_ec_attach(ctx);
+    if (status != UCC_OK) {
+        ucc_warn("could not attach tl context to any ec");
+    }
+
     ucc_debug("created ucc context %p for lib %s", ctx, lib->full_prefix);
     *context = ctx;
     return UCC_OK;

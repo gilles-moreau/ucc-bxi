@@ -173,6 +173,7 @@ typedef enum ucc_memory_type {
     UCC_MEMORY_TYPE_CUDA_MANAGED, /*!< NVIDIA CUDA managed memory */
     UCC_MEMORY_TYPE_ROCM,         /*!< AMD ROCM memory */
     UCC_MEMORY_TYPE_ROCM_MANAGED, /*!< AMD ROCM managed system memory */
+    UCC_MEMORY_TYPE_UCP,          /*!< UCP system memory */
     UCC_MEMORY_TYPE_LAST,
     UCC_MEMORY_TYPE_UNKNOWN = UCC_MEMORY_TYPE_LAST
 } ucc_memory_type_t;

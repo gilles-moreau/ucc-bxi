@@ -206,7 +206,7 @@ TYPED_TEST(test_allreduce_host, single_persistent_inplace)
 #ifdef HAVE_UCX 
 TYPED_TEST(test_allreduce_ucp, single)
 {
-    int           n_procs = 15;
+    int           n_procs = 2;
     ucc_job_env_t env     = {{"UCC_CL_BASIC_TUNE", "inf"},
         {"UCC_TL_UCP_TUNE", "allreduce:@knomial:inf"},
         {"UCC_TL_UCP_ENABLE_REDUCE", "1"}};

@@ -21,6 +21,7 @@ typedef struct ucc_ec_ucp_executor_task {
     ucs_status_ptr_t       reqs[UCC_EE_EXECUTOR_NUM_BUFS];
     size_t                 n_reqs;
     ucp_ep_h               self;
+    unsigned               failure;
     union {
         struct {
             ucp_rkey_h rkey;
@@ -30,8 +31,10 @@ typedef struct ucc_ec_ucp_executor_task {
 } ucc_ec_ucp_executor_task_t;
 
 typedef struct ucc_ec_ucp_executor {
-    ucc_ee_executor_t super;
-    unsigned          flags;
+    ucc_ee_executor_t     super;
+    unsigned              flags;
+    ucc_tl_ucp_context_t *ucp_ctx;
+    ucp_ep_h              self;
 } ucc_ec_ucp_executor_t;
 
 typedef struct ucc_ec_ucp_config {
@@ -39,13 +42,11 @@ typedef struct ucc_ec_ucp_config {
 } ucc_ec_ucp_config_t;
 
 typedef struct ucc_ec_ucp {
-    ucc_ec_base_t         super;
-    ucc_thread_mode_t     thread_mode;
-    ucc_mpool_t           executors;
-    ucc_mpool_t           executor_tasks;
-    ucc_spinlock_t        init_spinlock;
-    ucc_tl_ucp_context_t *ucp_ctx;
-    ucp_ep_h              self;
+    ucc_ec_base_t     super;
+    ucc_thread_mode_t thread_mode;
+    ucc_mpool_t       executors;
+    ucc_mpool_t       executor_tasks;
+    ucc_spinlock_t    init_spinlock;
 } ucc_ec_ucp_t;
 
 extern ucc_ec_ucp_t ucc_ec_ucp;

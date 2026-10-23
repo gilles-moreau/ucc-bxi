@@ -1,4 +1,5 @@
 #include "ec_ucp.h"
+#include "ucc/api/ucc_status.h"
 #include "utils/ucc_math.h"
 
 #include <ucp/api/ucp.h>
@@ -65,53 +66,6 @@ static ucc_status_t ucc_ec_ucp_init(const ucc_ec_params_t *ec_params)
     return UCC_OK;
 }
 
-ucc_status_t ucc_ec_ucp_attach(ucc_context_h ctx)
-{
-    ucs_status_t         ucs_status;
-    ucc_status_t         status;
-    ucc_tl_context_t    *tl_ctx;
-    ucc_tl_ucp_worker_t *worker;
-    ucp_ep_params_t      ep_params;
-
-    status = ucc_tl_context_get(ctx, "ucp", &tl_ctx);
-    if (UCC_OK != status) {
-        ec_debug(&ucc_ec_ucp.super,
-                 "TL ucp context is not available, skipping");
-        ucc_ec_ucp.ucp_ctx = NULL;
-        goto out;
-    }
-
-    ucc_ec_ucp.ucp_ctx = ucc_derived_of(tl_ctx, ucc_tl_ucp_context_t);
-    worker             = &ucc_ec_ucp.ucp_ctx->worker;
-
-    /* Get worker address to create endpoint. */
-    if (NULL == worker->worker_address) {
-        ucs_status = ucp_worker_get_address(
-            worker->ucp_worker, &worker->worker_address, &worker->ucp_addrlen);
-        if (UCS_OK != ucs_status) {
-            ec_error(&ucc_ec_ucp.super, "failed to get ucp worker address");
-            return ucs_status_to_ucc_status(ucs_status);
-        }
-    }
-
-    if (NULL == ucc_ec_ucp.self) {
-        ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
-        ep_params.address    = (ucp_address_t *)worker->worker_address;
-
-        ucs_status =
-            ucp_ep_create(worker->ucp_worker, &ep_params, &ucc_ec_ucp.self);
-
-        if (ucc_unlikely(UCS_OK != ucs_status)) {
-            ec_error(&ucc_ec_ucp.super, "ucp returned connect error: %s",
-                     ucs_status_string(ucs_status));
-            return ucs_status_to_ucc_status(ucs_status);
-        }
-    }
-
-out:
-    return status;
-}
-
 static ucc_status_t ucc_ec_ucp_get_attr(ucc_ec_attr_t *ec_attr)
 {
     if (ec_attr->field_mask & UCC_EC_ATTR_FIELD_THREAD_MODE) {
@@ -132,7 +86,13 @@ static ucc_status_t ucc_ec_ucp_finalize()
 ucc_status_t ucc_ucp_executor_init(const ucc_ee_executor_params_t *params,
                                    ucc_ee_executor_t             **executor)
 {
-    ucc_ee_executor_t *eee = ucc_mpool_get(&ucc_ec_ucp.executors);
+    ucc_status_t           status;
+    ucs_status_t           ucs_status;
+    ucc_tl_context_t      *tl_ctx;
+    ucc_context_t         *ctx;
+    ucc_tl_ucp_worker_t   *worker;
+    ucp_ep_params_t        ep_params;
+    ucc_ec_ucp_executor_t *eee = ucc_mpool_get(&ucc_ec_ucp.executors);
 
     ec_trace(&ucc_ec_ucp.super, "executor init, eee: %p", eee);
     if (ucc_unlikely(!eee)) {
@@ -140,10 +100,46 @@ ucc_status_t ucc_ucp_executor_init(const ucc_ee_executor_params_t *params,
         return UCC_ERR_NO_MEMORY;
     }
 
-    eee->ee_type = params->ee_type;
-    *executor    = eee;
+    ucc_assert(params->mask & UCC_EE_EXECUTOR_PARAM_FIELD_CONTEXT);
+    ctx = params->ctx;
 
-    return UCC_OK;
+    status = ucc_tl_context_get(ctx, "ucp", &tl_ctx);
+    if (UCC_OK != status) {
+        ec_debug(&ucc_ec_ucp.super,
+                 "TL ucp context is not available, skipping");
+        eee->ucp_ctx = NULL;
+        goto out;
+    }
+
+    eee->ucp_ctx = ucc_derived_of(tl_ctx, ucc_tl_ucp_context_t);
+    worker       = &eee->ucp_ctx->worker;
+
+    /* Get worker address to create endpoint. */
+    if (NULL == worker->worker_address) {
+        ucs_status = ucp_worker_get_address(
+            worker->ucp_worker, &worker->worker_address, &worker->ucp_addrlen);
+        if (UCS_OK != ucs_status) {
+            ec_error(&ucc_ec_ucp.super, "failed to get ucp worker address");
+            return ucs_status_to_ucc_status(ucs_status);
+        }
+    }
+
+    ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
+    ep_params.address    = (ucp_address_t *)worker->worker_address;
+
+    ucs_status = ucp_ep_create(worker->ucp_worker, &ep_params, &eee->self);
+
+    if (ucc_unlikely(UCS_OK != ucs_status)) {
+        ec_error(&ucc_ec_ucp.super, "ucp returned connect error: %s",
+                 ucs_status_string(ucs_status));
+        return ucs_status_to_ucc_status(ucs_status);
+    }
+
+    eee->super.ee_type = params->ee_type;
+    *executor          = &eee->super;
+
+out:
+    return status;
 }
 
 ucc_status_t ucc_ucp_executor_start(ucc_ee_executor_t *executor,
@@ -152,9 +148,10 @@ ucc_status_t ucc_ucp_executor_start(ucc_ee_executor_t *executor,
     ucc_ec_ucp_executor_t *eee =
         ucc_derived_of(executor, ucc_ec_ucp_executor_t);
 
-    //TODO: if specified, verify that context is a valid schedule
+    // TODO: if specified, verify that context is a valid schedule
 
     eee->super.ee_context = ee_context;
+    eee->flags            = 0;
     if (eee->super.ee_context != NULL) {
         eee->flags |= UCC_EC_UCP_EXECUTOR_SCHEDULE;
     }
@@ -179,7 +176,9 @@ ucc_ucp_executor_task_post(ucc_ee_executor_t                 *executor,
                            const ucc_ee_executor_task_args_t *task_args,
                            ucc_ee_executor_task_t           **task)
 {
-    ucc_status_t                status = UCC_OK;
+    ucc_status_t           status = UCC_OK;
+    ucc_ec_ucp_executor_t *eee =
+        ucs_derived_of(executor, ucc_ec_ucp_executor_t);
     ucc_ec_ucp_executor_task_t *eee_task;
 
     eee_task = ucc_mpool_get(&ucc_ec_ucp.executor_tasks);
@@ -188,10 +187,11 @@ ucc_ucp_executor_task_post(ucc_ee_executor_t                 *executor,
     }
 
     eee_task->super.eee = executor;
-    eee_task->self      = ucc_ec_ucp.self;
+    eee_task->self      = eee->self;
+    eee_task->failure   = 0;
 
     /* Register memory. */
-    status = ucc_ec_ucp_task_reg_mem(ucc_ec_ucp.ucp_ctx, task_args, eee_task);
+    status = ucc_ec_ucp_task_reg_mem(eee->ucp_ctx, task_args, eee_task);
     if (status != UCC_OK) {
         goto free_task;
     }
@@ -209,7 +209,8 @@ ucc_ucp_executor_task_post(ucc_ee_executor_t                 *executor,
         ucc_eee_task_reduce_t tr;
         int                   i;
 
-        srcs = &tr.srcs[0];
+        srcs    = &tr.srcs[0];
+        srcs[0] = trs->src1;
         for (i = 0; i < n_srcs - 1; i++) {
             srcs[i + 1] = PTR_OFFSET(trs->src2, trs->stride * i);
         }
@@ -228,7 +229,7 @@ ucc_ucp_executor_task_post(ucc_ee_executor_t                 *executor,
         status = UCC_ERR_NOT_SUPPORTED;
         goto free_task;
     }
-    eee_task->super.status = status;
+    eee_task->super.status = UCC_INPROGRESS;
     *task                  = &eee_task->super;
 
     return status;
@@ -249,9 +250,9 @@ ucc_ec_ucp_task_reg_mem(ucc_tl_ucp_context_t              *context,
     size_t               rkey_buffer_size;
     ucp_mem_map_params_t params;
 
-    params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS
-                        | UCP_MEM_MAP_PARAM_FIELD_LENGTH
-                        | UCP_MEM_MAP_PARAM_FIELD_FLAGS;
+    params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
+                        UCP_MEM_MAP_PARAM_FIELD_LENGTH |
+                        UCP_MEM_MAP_PARAM_FIELD_FLAGS;
     params.flags = 0;
 
     switch (task_args->task_type) {
@@ -262,8 +263,8 @@ ucc_ec_ucp_task_reg_mem(ucc_tl_ucp_context_t              *context,
         break;
     case UCC_EE_EXECUTOR_TASK_REDUCE_STRIDED:
         params.address = task_args->reduce_strided.dst;
-        params.length  = task_args->reduce_strided.count
-                        * ucc_dt_size(task_args->reduce_strided.dt);
+        params.length  = task_args->reduce_strided.count *
+                        ucc_dt_size(task_args->reduce_strided.dt);
         break;
     case UCC_EE_EXECUTOR_TASK_COPY:
     case UCC_EE_EXECUTOR_TASK_COPY_MULTI:
@@ -313,24 +314,29 @@ void ucc_ec_ucp_atomic_nbx_callback(void *request, ucs_status_t status,
 {
     ucc_ec_ucp_executor_task_t *task = (ucc_ec_ucp_executor_task_t *)user_data;
 
-    task->super.status = ucs_status_to_ucc_status(status);
-
     ucp_request_free(request);
+
+    task->failure |= status;
+
+    if (--task->n_reqs == 0) {
+        /* Task is completed when all requests are completed. */
+        task->super.status = task->failure ? UCC_ERR_NO_MESSAGE : UCC_OK;
+    }
 }
 
 static ucc_status_t ucc_ec_ucp_task_reduce(const ucc_eee_task_reduce_t *task,
                                            ucc_ec_ucp_executor_task_t *eee_task)
 {
-    ucc_status_t           status = UCC_INPROGRESS;
+    ucc_status_t           status = UCC_OK;
     ucc_ec_ucp_executor_t *eee =
         ucs_derived_of(eee_task->super.eee, ucc_ec_ucp_executor_t);
     ucp_request_param_t param;
 
     ucc_assert(task->n_srcs <= UCC_EE_EXECUTOR_NUM_BUFS);
 
-    param.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FIELD_CALLBACK
-                         | UCP_OP_ATTR_FIELD_USER_DATA
-                         | UCP_OP_ATTR_FIELD_AMO_TYPE;
+    param.op_attr_mask =
+        UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FIELD_CALLBACK |
+        UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_AMO_TYPE;
     param.op_attr_mask |= (eee->flags & UCC_EC_UCP_EXECUTOR_SCHEDULE)
                               ? UCP_OP_ATTR_FIELD_SCHEDH
                               : 0;
@@ -340,7 +346,8 @@ static ucc_status_t ucc_ec_ucp_task_reduce(const ucc_eee_task_reduce_t *task,
     param.user_data = (void *)eee_task;
     param.schedh    = (ucp_sched_h)eee->super.ee_context;
 
-    for (int i = 0; task->n_srcs; i++) {
+    eee_task->n_reqs = 0;
+    for (int i = 0; i < task->n_srcs; i++) {
         eee_task->reqs[i] = ucp_atomic_op_nbx(
             eee_task->self, ucc_op_to_ucp_op[task->op], task->srcs[i],
             task->count, (uintptr_t)task->dst, eee_task->reduce.rkey, &param);
@@ -348,9 +355,11 @@ static ucc_status_t ucc_ec_ucp_task_reduce(const ucc_eee_task_reduce_t *task,
         if (UCS_PTR_IS_ERR(eee_task->reqs[i])) {
             status =
                 ucs_status_to_ucc_status(UCS_PTR_RAW_STATUS(eee_task->reqs[i]));
-        } else if (UCS_PTR_RAW_STATUS(eee_task->reqs[i]) == UCS_OK) {
-            status = UCC_OK;
+            break;
         }
+
+        ucc_assert(UCS_PTR_IS_PTR(eee_task->reqs[i]));
+        eee_task->n_reqs++;
     }
 
     return status;
@@ -358,22 +367,32 @@ static ucc_status_t ucc_ec_ucp_task_reduce(const ucc_eee_task_reduce_t *task,
 
 ucc_status_t ucc_ucp_executor_task_test(const ucc_ee_executor_task_t *task)
 {
+    ucc_ec_ucp_executor_t *eee =
+        ucc_derived_of(task->eee, ucc_ec_ucp_executor_t);
+
+    ucp_worker_progress(eee->ucp_ctx->worker.ucp_worker);
     return task->status;
 }
 
 ucc_status_t ucc_ucp_executor_task_finalize(ucc_ee_executor_task_t *task)
 {
+    ucc_ec_ucp_executor_t *eee =
+        ucc_derived_of(task->eee, ucc_ec_ucp_executor_t);
     ucc_ec_ucp_executor_task_t *ucp_task =
         ucs_derived_of(task, ucc_ec_ucp_executor_task_t);
 
-    ucc_ec_ucp_task_unreg_mem(ucc_ec_ucp.ucp_ctx, ucp_task);
-    ucc_mpool_put(task);
+    ucc_ec_ucp_task_unreg_mem(eee->ucp_ctx, ucp_task);
+    ucc_mpool_put(ucp_task);
     return UCC_OK;
 }
 
 ucc_status_t ucc_ucp_executor_finalize(ucc_ee_executor_t *executor)
 {
+    ucc_ec_ucp_executor_t *ucp_ee =
+        ucs_derived_of(executor, ucc_ec_ucp_executor_t);
+
     ec_trace(&ucc_ec_ucp.super, "executor finalize, eee: %p", executor);
+    ucp_ee->flags = 0;
     ucc_mpool_put(executor);
 
     return UCC_OK;
@@ -384,7 +403,6 @@ ucc_ec_ucp_t ucc_ec_ucp = {
     .super.ref_cnt    = 0,
     .super.type       = UCC_EE_UCP,
     .super.init       = ucc_ec_ucp_init,
-    .super.attach     = ucc_ec_ucp_attach,
     .super.get_attr   = ucc_ec_ucp_get_attr,
     .super.finalize   = ucc_ec_ucp_finalize,
     .super.config_table =

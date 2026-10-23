@@ -84,25 +84,6 @@ ucc_status_t ucc_ec_init(const ucc_ec_params_t *ec_params)
     return UCC_OK;
 }
 
-ucc_status_t ucc_ec_attach(ucc_context_h ctx) 
-{
-    ucc_ee_type_t  et;
-    ucc_ec_base_t *ec;
-
-    pthread_mutex_lock(&ucc_ec_mutex);
-    for (et = UCC_EE_FIRST; et < UCC_EE_LAST; et++) {
-        if (NULL != ec_ops[et]) {
-            ec = ucc_container_of(ec_ops[et], ucc_ec_base_t, ops);
-            if (ec->attach != NULL) {
-                ec->attach(ctx);
-            }
-        }
-    }
-    pthread_mutex_unlock(&ucc_ec_mutex);
-
-    return UCC_OK;
-}
-
 ucc_status_t ucc_ec_available(ucc_ee_type_t ee_type)
 {
     if (NULL == ec_ops[ee_type]) {

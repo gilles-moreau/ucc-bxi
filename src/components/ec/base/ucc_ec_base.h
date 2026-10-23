@@ -58,6 +58,7 @@ typedef struct ucc_ee_executor {
 enum ucc_ee_executor_params_field {
     UCC_EE_EXECUTOR_PARAM_FIELD_TYPE       = UCC_BIT(0),
     UCC_EE_EXECUTOR_PARAM_FIELD_TASK_TYPES = UCC_BIT(1),
+    UCC_EE_EXECUTOR_PARAM_FIELD_CONTEXT    = UCC_BIT(2),
 };
 
 typedef enum ucc_ee_executor_task_type {
@@ -73,6 +74,7 @@ typedef struct ucc_ee_executor_params {
     uint64_t        mask;
     ucc_ee_type_t   ee_type;
     uint64_t        task_types;
+    ucc_context_h   ctx;
 } ucc_ee_executor_params_t;
 
 #define UCC_EE_EXECUTOR_NUM_BUFS 9
@@ -200,7 +202,6 @@ typedef struct ucc_ec_base {
     ucc_ec_config_t                *config;
     ucc_config_global_list_entry_t  config_table;
     ucc_status_t                   (*init)(const ucc_ec_params_t *ec_params);
-    ucc_status_t                   (*attach)(ucc_context_h ctx);
     ucc_status_t                   (*get_attr)(ucc_ec_attr_t *ec_attr);
     ucc_status_t                   (*finalize)();
     ucc_ec_ops_t                    ops;

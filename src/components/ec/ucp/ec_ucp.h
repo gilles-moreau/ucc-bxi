@@ -16,16 +16,32 @@ enum {
     UCC_EC_UCP_EXECUTOR_SCHEDULE = UCC_BIT(0)
 };
 
+typedef enum {
+    UCC_EC_UCP_REDUCE_STAGE_ACC,
+    UCC_EC_UCP_REDUCE_STAGE_WRITE_DST,
+    UCC_EC_UCP_REDUCE_STAGE_WAIT,
+    UCC_EC_UCP_REDUCE_STAGE_COMPLETED
+} ucc_ec_ucp_reduce_stage_t;
+
 typedef struct ucc_ec_ucp_executor_task {
     ucc_ee_executor_task_t super;
-    ucs_status_ptr_t       reqs[UCC_EE_EXECUTOR_NUM_BUFS];
     size_t                 n_reqs;
     ucp_ep_h               self;
     unsigned               failure;
+    ucc_memory_type_t      mem_type;
+    size_t                 size;
     union {
         struct {
-            ucp_rkey_h rkey;
-            ucp_mem_h  dst_memh;
+            size_t                    count;
+            ucc_datatype_t            dt;
+            ucp_rkey_h                dst_rkey;
+            ucp_mem_h                 dst_memh;
+            void                     *dst;
+            ucp_rkey_h                acc_rkey;
+            ucp_mem_h                 acc_memh;
+            void                     *acc_buf;
+            ucc_ec_ucp_reduce_stage_t stage;
+            ucs_status_ptr_t          flush_req;
         } reduce;
     };
 } ucc_ec_ucp_executor_task_t;
@@ -35,6 +51,7 @@ typedef struct ucc_ec_ucp_executor {
     unsigned              flags;
     ucc_tl_ucp_context_t *ucp_ctx;
     ucp_ep_h              self;
+    ucc_memory_type_t     mem_type;
 } ucc_ec_ucp_executor_t;
 
 typedef struct ucc_ec_ucp_config {

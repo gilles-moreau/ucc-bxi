@@ -171,7 +171,7 @@ UCC_CLASS_INIT_FUNC(ucc_tl_ucp_context_t,
         ucp_params.features |= UCP_FEATURE_RMA | UCP_FEATURE_AMO64;
     }
     if (tl_ucp_config->enable_reduce) {
-        ucp_params.features |= UCP_FEATURE_VAMO;
+        ucp_params.features |= UCP_FEATURE_RMA | UCP_FEATURE_VAMO;
     }
     ucp_params.tag_sender_mask = UCC_TL_UCP_TAG_SENDER_MASK;
     ucp_params.name = "UCC_UCP_CONTEXT";

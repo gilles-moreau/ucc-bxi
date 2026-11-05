@@ -1,4 +1,6 @@
 #include "ec_ucp.h"
+#include "components/mc/ucc_mc.h"
+#include "components/tl/ucp/tl_ucp.h"
 #include "ucc/api/ucc_status.h"
 #include "utils/ucc_math.h"
 
@@ -12,25 +14,28 @@ static ucp_atomic_op_t ucc_op_to_ucp_op[] = {[UCC_OP_SUM]  = UCP_ATOMIC_OP_ADD,
                                              [UCC_OP_LOR]  = UCP_ATOMIC_OP_OR,
                                              [UCC_OP_LXOR] = UCP_ATOMIC_OP_XOR};
 
-static ucp_atomic_type_t ucc_type_to_ucp_type[UCC_DT_PREDEFINED_LAST] = {
-    [UCC_DT_PREDEFINED_ID(UCC_DT_UINT32)]  = UCP_ATOMIC_TYPE_UINT32,
-    [UCC_DT_PREDEFINED_ID(UCC_DT_FLOAT32)] = UCP_ATOMIC_TYPE_FLOAT,
-    [UCC_DT_PREDEFINED_ID(UCC_DT_UINT64)]  = UCP_ATOMIC_TYPE_UINT64,
-    [UCC_DT_PREDEFINED_ID(UCC_DT_FLOAT64)] = UCP_ATOMIC_TYPE_DOUBLE};
+static ucp_atomic_type_t ucc_type_to_ucp_type[UCC_DT_PREDEFINED_LAST] =
+    {[UCC_DT_PREDEFINED_ID(UCC_DT_UINT32)]  = UCP_ATOMIC_TYPE_UINT32,
+     [UCC_DT_PREDEFINED_ID(UCC_DT_FLOAT32)] = UCP_ATOMIC_TYPE_FLOAT,
+     [UCC_DT_PREDEFINED_ID(UCC_DT_UINT64)]  = UCP_ATOMIC_TYPE_UINT64,
+     [UCC_DT_PREDEFINED_ID(UCC_DT_FLOAT64)] = UCP_ATOMIC_TYPE_DOUBLE};
 
-static ucc_status_t
-ucc_ec_ucp_task_reg_mem(ucc_tl_ucp_context_t              *context,
-                        const ucc_ee_executor_task_args_t *task_args,
-                        ucc_ec_ucp_executor_task_t        *eee_task);
+static ucs_memory_type_t ucc_memtype_to_ucp_memtype[UCC_MEMORY_TYPE_LAST] =
+    {[UCC_MEMORY_TYPE_CUDA]         = UCS_MEMORY_TYPE_CUDA,
+     [UCC_MEMORY_TYPE_CUDA_MANAGED] = UCS_MEMORY_TYPE_CUDA_MANAGED,
+     [UCC_MEMORY_TYPE_ROCM]         = UCS_MEMORY_TYPE_ROCM,
+     [UCC_MEMORY_TYPE_ROCM_MANAGED] = UCS_MEMORY_TYPE_ROCM_MANAGED,
+     [UCC_MEMORY_TYPE_HOST]         = UCS_MEMORY_TYPE_HOST};
+
 static ucc_status_t
 ucc_ec_ucp_task_reduce(const ucc_eee_task_reduce_t *task_args,
                        ucc_ec_ucp_executor_task_t  *task);
 
-static ucc_config_field_t ucc_ec_ucp_config_table[] = {
-    {"", "", NULL, ucc_offsetof(ucc_ec_ucp_config_t, super),
-     UCC_CONFIG_TYPE_TABLE(ucc_ec_config_table)},
+static ucc_config_field_t ucc_ec_ucp_config_table[] =
+    {{"", "", NULL, ucc_offsetof(ucc_ec_ucp_config_t, super),
+      UCC_CONFIG_TYPE_TABLE(ucc_ec_config_table)},
 
-    {NULL}
+     {NULL}
 
 };
 
@@ -43,10 +48,10 @@ static ucc_status_t ucc_ec_ucp_init(const ucc_ec_params_t *ec_params)
                      sizeof(ucc_ec_ucp.super.config->log_component.name));
     ucc_ec_ucp.thread_mode = ec_params->thread_mode;
 
-    status =
-        ucc_mpool_init(&ucc_ec_ucp.executors, 0, sizeof(ucc_ec_ucp_executor_t),
-                       0, UCC_CACHE_LINE_SIZE, 16, UINT_MAX, NULL,
-                       ec_params->thread_mode, "ec ucp executors");
+    status = ucc_mpool_init(&ucc_ec_ucp.executors, 0,
+                            sizeof(ucc_ec_ucp_executor_t), 0,
+                            UCC_CACHE_LINE_SIZE, 16, UINT_MAX, NULL,
+                            ec_params->thread_mode, "ec ucp executors");
     if (status != UCC_OK) {
         ec_error(&ucc_ec_ucp.super, "failed to created ec ucp executors mpool");
         return status;
@@ -101,7 +106,9 @@ ucc_status_t ucc_ucp_executor_init(const ucc_ee_executor_params_t *params,
     }
 
     ucc_assert(params->mask & UCC_EE_EXECUTOR_PARAM_FIELD_CONTEXT);
-    ctx = params->ctx;
+    ucc_assert(params->mask & UCC_EE_EXECUTOR_PARAM_FIELD_TASK_TYPES);
+    ctx           = params->ctx;
+    eee->mem_type = params->task_types;
 
     status = ucc_tl_context_get(ctx, "ucp", &tl_ctx);
     if (UCC_OK != status) {
@@ -116,8 +123,9 @@ ucc_status_t ucc_ucp_executor_init(const ucc_ee_executor_params_t *params,
 
     /* Get worker address to create endpoint. */
     if (NULL == worker->worker_address) {
-        ucs_status = ucp_worker_get_address(
-            worker->ucp_worker, &worker->worker_address, &worker->ucp_addrlen);
+        ucs_status = ucp_worker_get_address(worker->ucp_worker,
+                                            &worker->worker_address,
+                                            &worker->ucp_addrlen);
         if (UCS_OK != ucs_status) {
             ec_error(&ucc_ec_ucp.super, "failed to get ucp worker address");
             return ucs_status_to_ucc_status(ucs_status);
@@ -145,8 +153,8 @@ out:
 ucc_status_t ucc_ucp_executor_start(ucc_ee_executor_t *executor,
                                     void              *ee_context)
 {
-    ucc_ec_ucp_executor_t *eee =
-        ucc_derived_of(executor, ucc_ec_ucp_executor_t);
+    ucc_ec_ucp_executor_t *eee = ucc_derived_of(executor,
+                                                ucc_ec_ucp_executor_t);
 
     // TODO: if specified, verify that context is a valid schedule
 
@@ -176,9 +184,9 @@ ucc_ucp_executor_task_post(ucc_ee_executor_t                 *executor,
                            const ucc_ee_executor_task_args_t *task_args,
                            ucc_ee_executor_task_t           **task)
 {
-    ucc_status_t           status = UCC_OK;
-    ucc_ec_ucp_executor_t *eee =
-        ucs_derived_of(executor, ucc_ec_ucp_executor_t);
+    ucc_status_t                status = UCC_OK;
+    ucc_ec_ucp_executor_t      *eee    = ucs_derived_of(executor,
+                                                        ucc_ec_ucp_executor_t);
     ucc_ec_ucp_executor_task_t *eee_task;
 
     eee_task = ucc_mpool_get(&ucc_ec_ucp.executor_tasks);
@@ -187,14 +195,12 @@ ucc_ucp_executor_task_post(ucc_ee_executor_t                 *executor,
     }
 
     eee_task->super.eee = executor;
-    eee_task->self      = eee->self;
-    eee_task->failure   = 0;
+    memcpy(&eee_task->super.args, task_args,
+           sizeof(ucc_ee_executor_task_args_t));
 
-    /* Register memory. */
-    status = ucc_ec_ucp_task_reg_mem(eee->ucp_ctx, task_args, eee_task);
-    if (status != UCC_OK) {
-        goto free_task;
-    }
+    eee_task->self     = eee->self;
+    eee_task->failure  = 0;
+    eee_task->mem_type = eee->mem_type;
 
     switch (task_args->task_type) {
     case UCC_EE_EXECUTOR_TASK_REDUCE:
@@ -229,6 +235,7 @@ ucc_ucp_executor_task_post(ucc_ee_executor_t                 *executor,
         status = UCC_ERR_NOT_SUPPORTED;
         goto free_task;
     }
+
     eee_task->super.status = UCC_INPROGRESS;
     *task                  = &eee_task->super;
 
@@ -239,88 +246,157 @@ free_task:
     return status;
 }
 
-static ucc_status_t
-ucc_ec_ucp_task_reg_mem(ucc_tl_ucp_context_t              *context,
-                        const ucc_ee_executor_task_args_t *task_args,
-                        ucc_ec_ucp_executor_task_t        *eee_task)
+static ucc_status_t ucc_ec_ucp_task_alloc_mem(
+    ucc_tl_ucp_context_t *context, size_t length, ucc_memory_type_t mem_type,
+    ucp_ep_h ep, ucp_mem_h *memh_p, ucp_rkey_h *rkey_p, void **address_p)
 {
     ucc_status_t         status     = UCC_OK;
     ucs_status_t         ucs_status = UCS_OK;
     void                *rkey_buffer;
     size_t               rkey_buffer_size;
     ucp_mem_map_params_t params;
+    ucp_mem_h            memh;
+    ucp_rkey_h           rkey;
+    ucp_mem_attr_t       attr = {.field_mask = UCP_MEM_ATTR_FIELD_ADDRESS |
+                                               UCP_MEM_ATTR_FIELD_LENGTH};
 
     params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
                         UCP_MEM_MAP_PARAM_FIELD_LENGTH |
-                        UCP_MEM_MAP_PARAM_FIELD_FLAGS;
-    params.flags = 0;
+                        UCP_MEM_MAP_PARAM_FIELD_FLAGS |
+                        UCP_MEM_MAP_PARAM_FIELD_MEMORY_TYPE;
+    params.flags       = UCP_MEM_MAP_ALLOCATE;
+    params.address     = NULL;
+    params.length      = length;
+    params.memory_type = ucc_memtype_to_ucp_memtype[mem_type];
 
-    switch (task_args->task_type) {
-    case UCC_EE_EXECUTOR_TASK_REDUCE:
-        params.address = task_args->reduce.dst;
-        params.length =
-            task_args->reduce.count * ucc_dt_size(task_args->reduce.dt);
-        break;
-    case UCC_EE_EXECUTOR_TASK_REDUCE_STRIDED:
-        params.address = task_args->reduce_strided.dst;
-        params.length  = task_args->reduce_strided.count *
-                        ucc_dt_size(task_args->reduce_strided.dt);
-        break;
-    case UCC_EE_EXECUTOR_TASK_COPY:
-    case UCC_EE_EXECUTOR_TASK_COPY_MULTI:
-    default:
-        status = UCC_ERR_NOT_SUPPORTED;
+    ucs_status = ucp_mem_map(context->worker.ucp_context, &params, &memh);
+    if (UCS_OK != ucs_status) {
+        ec_error(&ucc_ec_ucp.super, "failed to map reduce address");
+        status = ucs_status_to_ucc_status(ucs_status);
+        goto err;
     }
 
-    ucs_status = ucp_mem_map(context->worker.ucp_context, &params,
-                             &eee_task->reduce.dst_memh);
+    ucs_status = ucp_rkey_pack(context->worker.ucp_context, memh, &rkey_buffer,
+                               &rkey_buffer_size);
+    if (ucs_status != UCS_OK) {
+        ec_error(&ucc_ec_ucp.super, "failed to pack rkey");
+        status = ucs_status_to_ucc_status(ucs_status);
+        goto err_unmap_mem;
+    }
+
+    ucs_status = ucp_ep_rkey_unpack(ep, rkey_buffer, &rkey);
+    if (ucs_status != UCS_OK) {
+        ec_error(&ucc_ec_ucp.super, "failed to unpack rkey");
+        status = ucs_status_to_ucc_status(ucs_status);
+        goto err_release_rkey;
+    }
+
+    ucp_rkey_buffer_release(rkey_buffer);
+
+    ucp_mem_query(memh, &attr);
+
+    *address_p = attr.address;
+    *memh_p    = memh;
+    *rkey_p    = rkey;
+
+    return ucs_status_to_ucc_status(ucs_status);
+
+err_release_rkey:
+    ucp_rkey_buffer_release(rkey_buffer);
+err_unmap_mem:
+    ucp_mem_unmap(context->worker.ucp_context, memh);
+err:
+    return status;
+}
+
+static ucc_status_t ucc_ec_ucp_task_reg_mem(ucc_tl_ucp_context_t *context,
+                                            void *address, size_t length,
+                                            ucc_memory_type_t mem_type,
+                                            ucp_ep_h ep, ucp_mem_h *memh_p,
+                                            ucp_rkey_h *rkey_p)
+{
+    ucc_status_t         status     = UCC_OK;
+    ucs_status_t         ucs_status = UCS_OK;
+    void                *rkey_buffer;
+    size_t               rkey_buffer_size;
+    ucp_mem_map_params_t params;
+    ucp_mem_h            memh;
+    ucp_rkey_h           rkey;
+
+    params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
+                        UCP_MEM_MAP_PARAM_FIELD_LENGTH |
+                        UCP_MEM_MAP_PARAM_FIELD_MEMORY_TYPE |
+                        UCP_MEM_MAP_PARAM_FIELD_FLAGS;
+    params.flags       = 0;
+    params.address     = address;
+    params.length      = length;
+    params.memory_type = ucc_memtype_to_ucp_memtype[mem_type];
+
+    ucs_status = ucp_mem_map(context->worker.ucp_context, &params, &memh);
     if (UCS_OK != ucs_status) {
         ec_error(&ucc_ec_ucp.super, "failed to map reduce address");
         return ucs_status_to_ucc_status(ucs_status);
     }
 
-    ucs_status =
-        ucp_rkey_pack(context->worker.ucp_context, eee_task->reduce.dst_memh,
-                      &rkey_buffer, &rkey_buffer_size);
+    ucs_status = ucp_rkey_pack(context->worker.ucp_context, memh, &rkey_buffer,
+                               &rkey_buffer_size);
     if (ucs_status != UCS_OK) {
         status = ucs_status_to_ucc_status(ucs_status);
         goto err_unmap_mem;
     }
 
-    ucs_status =
-        ucp_ep_rkey_unpack(eee_task->self, rkey_buffer, &eee_task->reduce.rkey);
+    ucs_status = ucp_ep_rkey_unpack(ep, rkey_buffer, &rkey);
     if (ucs_status != UCS_OK) {
         status = ucs_status_to_ucc_status(ucs_status);
     }
 
     ucp_rkey_buffer_release(rkey_buffer);
 
+    *memh_p = memh;
+    *rkey_p = rkey;
+
     return status;
 
 err_unmap_mem:
-    ucp_mem_unmap(context->worker.ucp_context, eee_task->reduce.dst_memh);
+    ucp_mem_unmap(context->worker.ucp_context, memh);
     return status;
 }
 
-static void ucc_ec_ucp_task_unreg_mem(ucc_tl_ucp_context_t       *context,
-                                      ucc_ec_ucp_executor_task_t *eee_task)
+static void ucc_ec_ucp_task_unreg_mem(ucc_tl_ucp_context_t *context,
+                                      ucp_mem_h memh, ucp_rkey_h rkey)
 {
-    ucp_mem_unmap(context->worker.ucp_context, eee_task->reduce.dst_memh);
-    ucp_rkey_destroy(eee_task->reduce.rkey);
+    ucp_mem_unmap(context->worker.ucp_context, memh);
+    ucp_rkey_destroy(rkey);
 }
 
 void ucc_ec_ucp_atomic_nbx_callback(void *request, ucs_status_t status,
-                                    void *user_data)
+                                    void *data)
 {
-    ucc_ec_ucp_executor_task_t *task = (ucc_ec_ucp_executor_task_t *)user_data;
+    ucc_ec_ucp_executor_task_t *eee_task = (ucc_ec_ucp_executor_task_t *)data;
 
     ucp_request_free(request);
 
-    task->failure |= status;
+    eee_task->failure |= status;
 
-    if (--task->n_reqs == 0) {
-        /* Task is completed when all requests are completed. */
-        task->super.status = task->failure ? UCC_ERR_NO_MESSAGE : UCC_OK;
+    if (--eee_task->n_reqs == 0) {
+        switch (eee_task->reduce.stage) {
+        case UCC_EC_UCP_REDUCE_STAGE_ACC:
+            eee_task->reduce.stage = UCC_EC_UCP_REDUCE_STAGE_WRITE_DST;
+            break;
+        case UCC_EC_UCP_REDUCE_STAGE_WRITE_DST:
+            break;
+        case UCC_EC_UCP_REDUCE_STAGE_WAIT:
+            eee_task->reduce.stage = UCC_EC_UCP_REDUCE_STAGE_COMPLETED;
+            eee_task->super.status = eee_task->failure ? UCC_ERR_NO_MESSAGE :
+                                                         UCC_OK;
+            break;
+        case UCC_EC_UCP_REDUCE_STAGE_COMPLETED:
+            break;
+        default:
+            ec_error(&ucc_ec_ucp.super, "UCP: unknown reduce stage.");
+            ucc_assert(0);
+            break;
+        }
     }
 }
 
@@ -328,68 +404,201 @@ static ucc_status_t ucc_ec_ucp_task_reduce(const ucc_eee_task_reduce_t *task,
                                            ucc_ec_ucp_executor_task_t *eee_task)
 {
     ucc_status_t           status = UCC_OK;
-    ucc_ec_ucp_executor_t *eee =
-        ucs_derived_of(eee_task->super.eee, ucc_ec_ucp_executor_t);
-    ucp_request_param_t param;
+    ucs_status_ptr_t       ucs_status;
+    ucc_ec_ucp_executor_t *eee = ucs_derived_of(eee_task->super.eee,
+                                                ucc_ec_ucp_executor_t);
+    ucp_request_param_t    param;
+
+    /* Set operation length. */
+    eee_task->size         = task->count * ucc_dt_size(task->dt);
+    eee_task->reduce.dst   = task->dst;
+    eee_task->reduce.dt    = task->dt;
+    eee_task->reduce.count = task->count;
 
     ucc_assert(task->n_srcs <= UCC_EE_EXECUTOR_NUM_BUFS);
 
-    param.op_attr_mask =
-        UCP_OP_ATTR_FIELD_DATATYPE | UCP_OP_ATTR_FIELD_CALLBACK |
-        UCP_OP_ATTR_FIELD_USER_DATA | UCP_OP_ATTR_FIELD_AMO_TYPE;
-    param.op_attr_mask |= (eee->flags & UCC_EC_UCP_EXECUTOR_SCHEDULE)
-                              ? UCP_OP_ATTR_FIELD_SCHEDH
-                              : 0;
-    param.datatype  = ucp_dt_make_contig(ucc_dt_size(task->dt));
-    param.cb.send   = ucc_ec_ucp_atomic_nbx_callback;
-    param.type      = ucc_type_to_ucp_type[UCC_DT_PREDEFINED_ID(task->dt)];
-    param.user_data = (void *)eee_task;
-    param.schedh    = (ucp_sched_h)eee->super.ee_context;
+    /* Allocate accumulate buffer. */
+    status = ucc_ec_ucp_task_alloc_mem(eee->ucp_ctx, eee_task->size,
+                                       eee_task->mem_type, eee->self,
+                                       &eee_task->reduce.acc_memh,
+                                       &eee_task->reduce.acc_rkey,
+                                       &eee_task->reduce.acc_buf);
+    if (status != UCC_OK) {
+        goto err;
+    }
 
+    status = ucc_mc_memset(eee_task->reduce.acc_buf, 0, eee_task->size,
+                           eee_task->mem_type);
+    if (status != UCC_OK) {
+        goto err_release_acc_buf;
+    }
+
+    /* Register destination memory. */
+    status = ucc_ec_ucp_task_reg_mem(eee->ucp_ctx, task->dst, eee_task->size,
+                                     eee_task->mem_type, eee->self,
+                                     &eee_task->reduce.dst_memh,
+                                     &eee_task->reduce.dst_rkey);
+    if (status != UCC_OK) {
+        goto err_release_acc_buf;
+    }
+
+    param.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE |
+                         UCP_OP_ATTR_FIELD_CALLBACK |
+                         UCP_OP_ATTR_FIELD_USER_DATA |
+                         UCP_OP_ATTR_FIELD_MEMORY_TYPE |
+                         UCP_OP_ATTR_FIELD_AMO_TYPE;
+    param.op_attr_mask |= (eee->flags & UCC_EC_UCP_EXECUTOR_SCHEDULE) ?
+                              UCP_OP_ATTR_FIELD_SCHEDH :
+                              0;
+    param.datatype    = ucp_dt_make_contig(ucc_dt_size(task->dt));
+    param.cb.send     = ucc_ec_ucp_atomic_nbx_callback;
+    param.memory_type = ucc_memtype_to_ucp_memtype[eee_task->mem_type];
+    param.type        = ucc_type_to_ucp_type[UCC_DT_PREDEFINED_ID(task->dt)];
+    param.user_data   = (void *)eee_task;
+    param.schedh      = (ucp_sched_h)eee->super.ee_context;
+
+    /* Set task stage. */
+    eee_task->reduce.stage = UCC_EC_UCP_REDUCE_STAGE_ACC;
+
+    /* Accumulate data using reduce operation. */
     eee_task->n_reqs = 0;
     for (int i = 0; i < task->n_srcs; i++) {
-        eee_task->reqs[i] = ucp_atomic_op_nbx(
-            eee_task->self, ucc_op_to_ucp_op[task->op], task->srcs[i],
-            task->count, (uintptr_t)task->dst, eee_task->reduce.rkey, &param);
+        ucs_status = ucp_atomic_op_nbx(eee_task->self,
+                                       ucc_op_to_ucp_op[task->op],
+                                       task->srcs[i], task->count,
+                                       (uint64_t)eee_task->reduce.acc_buf,
+                                       eee_task->reduce.acc_rkey, &param);
 
-        if (UCS_PTR_IS_ERR(eee_task->reqs[i])) {
-            status =
-                ucs_status_to_ucc_status(UCS_PTR_RAW_STATUS(eee_task->reqs[i]));
-            break;
+        if (UCS_PTR_IS_ERR(ucs_status)) {
+            status = ucs_status_to_ucc_status(UCS_PTR_RAW_STATUS(ucs_status));
+            goto err_release_dst_buf;
         }
 
-        ucc_assert(UCS_PTR_IS_PTR(eee_task->reqs[i]));
+        ucc_assert(UCS_PTR_IS_PTR(ucs_status));
         eee_task->n_reqs++;
     }
 
+    /* If the execution is handled by the scheduler, then schedule write to 
+     * destination buffer, otherwise it has to be executed when reduction is 
+     * complete. */
+    if (eee->flags & UCC_EC_UCP_EXECUTOR_SCHEDULE) {
+        /* Write result to destination buffer. */
+        eee_task->n_reqs++;
+        param.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
+        param.memh = eee_task->reduce.dst_memh;
+        ucs_status = ucp_get_nbx(eee_task->self, task->dst, task->count,
+                                 (uint64_t)eee_task->reduce.acc_buf,
+                                 eee_task->reduce.acc_rkey, &param);
+        if (UCS_PTR_IS_ERR(ucs_status)) {
+            status = ucs_status_to_ucc_status(UCS_PTR_RAW_STATUS(ucs_status));
+            goto err_release_dst_buf;
+        }
+        eee_task->reduce.stage = UCC_EC_UCP_REDUCE_STAGE_WAIT;
+    }
+
+    return UCC_OK;
+
+err_release_dst_buf:
+    ucc_ec_ucp_task_unreg_mem(eee->ucp_ctx, eee_task->reduce.dst_memh,
+                              eee_task->reduce.dst_rkey);
+err_release_acc_buf:
+    ucc_ec_ucp_task_unreg_mem(eee->ucp_ctx, eee_task->reduce.acc_memh,
+                              eee_task->reduce.acc_rkey);
+err:
     return status;
 }
 
 ucc_status_t ucc_ucp_executor_task_test(const ucc_ee_executor_task_t *task)
 {
-    ucc_ec_ucp_executor_t *eee =
-        ucc_derived_of(task->eee, ucc_ec_ucp_executor_t);
+    ucs_status_ptr_t            ucs_status;
+    ucc_ec_ucp_executor_task_t *eee_task =
+        ucs_derived_of(task, ucc_ec_ucp_executor_task_t);
+    ucc_ec_ucp_executor_t *eee = ucc_derived_of(task->eee,
+                                                ucc_ec_ucp_executor_t);
+    ucp_request_param_t    param;
 
     ucp_worker_progress(eee->ucp_ctx->worker.ucp_worker);
+
+    switch (eee_task->reduce.stage) {
+    case UCC_EC_UCP_REDUCE_STAGE_ACC:
+        break;
+    case UCC_EC_UCP_REDUCE_STAGE_WRITE_DST:
+        param.op_attr_mask = UCP_OP_ATTR_FIELD_DATATYPE |
+                             UCP_OP_ATTR_FIELD_CALLBACK |
+                             UCP_OP_ATTR_FIELD_USER_DATA |
+                             UCP_OP_ATTR_FIELD_MEMORY_TYPE |
+                             UCP_OP_ATTR_FLAG_NO_IMM_CMPL;
+        //NOTE: We need to ensure the operation is completed remotely.
+        //      That is why we dont want immediate completion.
+        param.datatype = ucp_dt_make_contig(ucc_dt_size(eee_task->reduce.dt));
+        param.cb.send  = ucc_ec_ucp_atomic_nbx_callback;
+        param.memory_type = ucc_memtype_to_ucp_memtype[eee_task->mem_type];
+        param.type =
+            ucc_type_to_ucp_type[UCC_DT_PREDEFINED_ID(eee_task->reduce.dt)];
+        param.user_data = (void *)eee_task;
+
+        /* Task is completed when all requests are completed. */
+        eee_task->n_reqs++;
+        param.op_attr_mask |= UCP_OP_ATTR_FIELD_MEMH;
+        param.memh = eee_task->reduce.acc_memh;
+        ucs_status = ucp_put_nbx(eee_task->self, eee_task->reduce.acc_buf,
+                                 eee_task->reduce.count,
+                                 (uint64_t)eee_task->reduce.dst,
+                                 eee_task->reduce.dst_rkey, &param);
+
+        if (UCS_PTR_STATUS(ucs_status) != UCS_INPROGRESS) {
+            ec_error(&ucc_ec_ucp.super, "EC UCP: could not write acc result");
+            eee_task->super.status = UCC_ERR_NO_MESSAGE;
+        }
+
+        eee_task->n_reqs++;
+        eee_task->reduce.flush_req = ucp_ep_flush_nbx(eee_task->self, &param);
+        if (eee_task->reduce.flush_req == NULL) {
+            eee_task->reduce.stage = UCC_EC_UCP_REDUCE_STAGE_COMPLETED;
+        } else if (UCS_PTR_IS_ERR(eee_task->reduce.flush_req)) {
+            eee_task->failure |= UCS_PTR_RAW_STATUS(eee_task->reduce.flush_req);
+        } else {
+            eee_task->reduce.stage = UCC_EC_UCP_REDUCE_STAGE_WAIT;
+        }
+
+        break;
+    case UCC_EC_UCP_REDUCE_STAGE_COMPLETED:
+    default:
+        break;
+    }
+
     return task->status;
 }
 
 ucc_status_t ucc_ucp_executor_task_finalize(ucc_ee_executor_task_t *task)
 {
-    ucc_ec_ucp_executor_t *eee =
-        ucc_derived_of(task->eee, ucc_ec_ucp_executor_t);
+    ucc_status_t                status = UCC_OK;
+    ucc_ec_ucp_executor_t      *eee    = ucc_derived_of(task->eee,
+                                                        ucc_ec_ucp_executor_t);
     ucc_ec_ucp_executor_task_t *ucp_task =
         ucs_derived_of(task, ucc_ec_ucp_executor_task_t);
 
-    ucc_ec_ucp_task_unreg_mem(eee->ucp_ctx, ucp_task);
+    switch (task->args.task_type) {
+    case UCC_EE_EXECUTOR_TASK_REDUCE:
+    case UCC_EE_EXECUTOR_TASK_REDUCE_STRIDED:
+        ucc_ec_ucp_task_unreg_mem(eee->ucp_ctx, ucp_task->reduce.acc_memh,
+                                  ucp_task->reduce.acc_rkey);
+        ucc_ec_ucp_task_unreg_mem(eee->ucp_ctx, ucp_task->reduce.dst_memh,
+                                  ucp_task->reduce.dst_rkey);
+        break;
+    default:
+        //NOTE: should never happen.
+        ucc_error("EC UCP: finalize task type not supported");
+        status = UCC_ERR_NOT_SUPPORTED;
+    }
     ucc_mpool_put(ucp_task);
-    return UCC_OK;
+    return status;
 }
 
 ucc_status_t ucc_ucp_executor_finalize(ucc_ee_executor_t *executor)
 {
-    ucc_ec_ucp_executor_t *ucp_ee =
-        ucs_derived_of(executor, ucc_ec_ucp_executor_t);
+    ucc_ec_ucp_executor_t *ucp_ee = ucs_derived_of(executor,
+                                                   ucc_ec_ucp_executor_t);
 
     ec_trace(&ucc_ec_ucp.super, "executor finalize, eee: %p", executor);
     ucp_ee->flags = 0;

@@ -275,10 +275,12 @@ UCC_CORE_PROFILE_FUNC(ucc_status_t, ucc_collective_init,
         params.mask    = UCC_EE_EXECUTOR_PARAM_FIELD_TYPE;
         //TODO: use other flag to specify the use of ee ucp because using it does 
         //      not necessarily mean operations are scheduled.
-        if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
-            params.ee_type = UCC_EE_UCP;
-            params.mask   |= UCC_EE_EXECUTOR_PARAM_FIELD_CONTEXT;
-            params.ctx     = team->contexts[0];
+        if (coll_args->flags & UCC_COLL_ARGS_FLAG_USE_EC_UCP) {
+            params.mask      |= UCC_EE_EXECUTOR_PARAM_FIELD_CONTEXT | 
+                                UCC_EE_EXECUTOR_PARAM_FIELD_TASK_TYPES;
+            params.ee_type    = UCC_EE_UCP;
+            params.task_types = (uint64_t)coll_mem_type;
+            params.ctx        = team->contexts[0];
         } else {
             params.ee_type = coll_ee_type;
         }

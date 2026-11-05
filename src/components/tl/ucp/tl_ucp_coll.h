@@ -409,6 +409,28 @@ static inline ucc_status_t ucc_tl_ucp_test(ucc_tl_ucp_task_t *task)
     return UCC_INPROGRESS;
 }
 
+static inline ucc_status_t ucc_tl_ucp_exec_test(ucc_ee_executor_task_t *task)
+{
+    ucc_status_t status;
+
+    if (task != NULL) {                                                      
+        status = ucc_ee_executor_task_test(task);                            
+        if (status > 0) {                                                      
+            task->status = UCC_INPROGRESS;                               
+            return UCC_INPROGRESS;                                                            
+        }                                                                      
+        ucc_ee_executor_task_finalize(task);                                 
+        task = NULL;                                                         
+        if (ucc_unlikely(status < 0)) {                                        
+            tl_error(UCC_TASK_LIB(task), "error");                             
+            task->status = status;                                       
+            return UCC_ERR_NO_MESSAGE;                                                            
+        }                                                                      
+    }
+
+    return UCC_OK;
+}
+
 #define UCC_TL_UCP_TASK_RECV_COMPLETE(_task)                                   \
     (((_task)->tagged.recv_posted == (_task)->tagged.recv_completed))
 

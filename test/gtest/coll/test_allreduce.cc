@@ -206,7 +206,7 @@ TYPED_TEST(test_allreduce_host, single_persistent_inplace)
 #ifdef HAVE_UCX 
 TYPED_TEST(test_allreduce_ucp, single)
 {
-    int           n_procs = 2;
+    int           n_procs = 8;
     ucc_job_env_t env     = {{"UCC_CL_BASIC_TUNE", "inf"},
         {"UCC_TL_UCP_TUNE", "allreduce:@knomial:inf"},
         {"UCC_TL_UCP_ENABLE_REDUCE", "1"}};
@@ -223,7 +223,41 @@ TYPED_TEST(test_allreduce_ucp, single)
         this->data_init(size, TypeParam::dt, count, ctxs, false);
         /* Add schedule flag to enforce UCP ec for reduce. */
         for (int r = 0; r < size; r++) {
-            ctxs[r]->args->flags |= UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
+            ctxs[r]->args->flags |= UCC_COLL_ARGS_FLAG_USE_EC_UCP;
+        }
+        UccReq req(team, ctxs);                                        
+        for (auto i = 0; i < repeat; i++) {                           
+            req.start();                                               
+            req.wait();                                                
+            EXPECT_EQ(true, this->data_validate(ctxs));                
+            this->reset(ctxs);                                         
+        }                                                              
+        this->data_fini(ctxs);                                         
+    }                                                                  
+}
+
+TYPED_TEST(test_allreduce_ucp, single_sched)
+{
+    int           n_procs = 8;
+    ucc_job_env_t env     = {{"UCC_CL_BASIC_TUNE", "inf"},
+        {"UCC_TL_UCP_TUNE", "allreduce:@knomial:inf"},
+        {"UCC_TL_UCP_ENABLE_REDUCE", "1"}};
+    UccJob        job(n_procs, UccJob::UCC_JOB_CTX_GLOBAL, env);
+    UccTeam_h     team   = job.create_team(n_procs);
+    int           repeat = 1;
+    UccCollCtxVec ctxs;                                            
+
+    std::array<int, 2> counts{4, 256};                              
+    for (int count : counts) {                                         
+        int           size = team->procs.size();                       
+        SET_MEM_TYPE(UCC_MEMORY_TYPE_HOST);                                       
+        this->set_inplace(TEST_NO_INPLACE);                                   
+        this->data_init(size, TypeParam::dt, count, ctxs, false);
+        /* Add schedule flag to enforce UCP ec for reduce. */
+        for (int r = 0; r < size; r++) {
+            ctxs[r]->args->mask  |= UCC_COLL_ARGS_FIELD_FLAGS;
+            ctxs[r]->args->flags |= UCC_COLL_ARGS_FLAG_USE_EC_UCP |
+                                    UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS;
         }
         UccReq req(team, ctxs);                                        
         for (auto i = 0; i < repeat; i++) {                           

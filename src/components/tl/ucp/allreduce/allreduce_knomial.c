@@ -120,7 +120,8 @@ UCC_KN_PHASE_EXTRA_REDUCE:
         }
 
     UCC_KN_PHASE_LOOP:
-        if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+        if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) && 
+            (UCC_INPROGRESS == ucc_tl_ucp_test(task))) {
             SAVE_STATE(UCC_KN_PHASE_LOOP);
             return;
         }
@@ -148,9 +149,11 @@ UCC_KN_PHASE_EXTRA_REDUCE:
                 return;
             }
 UCC_KN_PHASE_REDUCE:
-            EXEC_TASK_TEST(UCC_KN_PHASE_REDUCE,
-                           "failed to perform dt reduction",
-                           task->allreduce_kn.etask);
+            if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED)) {
+                EXEC_TASK_TEST(UCC_KN_PHASE_REDUCE,
+                               "failed to perform dt reduction",
+                               task->allreduce_kn.etask);
+            }
         }
         ucc_knomial_pattern_next_iteration(p);
     }
@@ -162,11 +165,17 @@ UCC_KN_PHASE_REDUCE:
             task, out);
         goto UCC_KN_PHASE_PROXY;
     } else {
-        goto completion;
+        if (!(task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED)) {
+            goto completion;
+        }
     }
 
 UCC_KN_PHASE_PROXY:
-    if (UCC_INPROGRESS == ucc_tl_ucp_test(task)) {
+    status = ucc_tl_ucp_test(task);
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
+        status = ucc_tl_ucp_exec_test(task->allreduce_kn.etask);
+    }
+    if (UCC_INPROGRESS == status) {
         SAVE_STATE(UCC_KN_PHASE_PROXY);
         return;
     }
@@ -183,6 +192,7 @@ out:
 ucc_status_t ucc_tl_ucp_allreduce_knomial_start(ucc_coll_task_t *coll_task)
 {
     ucc_tl_ucp_task_t *task      = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
+    ucc_coll_args_t   *coll_args = &TASK_ARGS(task);
     ucc_tl_ucp_team_t *team      = TASK_TEAM(task);
     ucc_rank_t         size      = (ucc_rank_t)task->subset.map.ep_num;
     ucc_rank_t         rank      = task->subset.myrank;
@@ -208,6 +218,20 @@ ucc_status_t ucc_tl_ucp_allreduce_knomial_start(ucc_coll_task_t *coll_task)
     if (ucc_unlikely(status != UCC_OK)) {
         return status;
     }
+
+    if (coll_args->flags & UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS) {
+        status = ucc_tl_ucp_create_sched(team, task);
+        if (status != UCC_OK) {
+            return status;
+        }
+
+        /* Attach scheduler context to the executor. */
+        status = ucc_ee_executor_start(task->allreduce_kn.executor, task->sched);
+        if (status != UCC_OK) {
+            return status;
+        }
+    }
+
     return ucc_progress_queue_enqueue(UCC_TL_CORE_CTX(team)->pq, &task->super);
 }
 

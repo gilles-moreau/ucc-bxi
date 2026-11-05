@@ -1717,8 +1717,10 @@ typedef enum {
                                                             mapped region.
                                                             Useful for one-sided
                                                             collectives. */
-    UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS  = UCC_BIT(8)  /*!< If set, operations will be 
+    UCC_COLL_ARGS_FLAG_SCHEDULE_OPERATIONS  = UCC_BIT(8), /*!< If set, operations will be 
                                                             scheduled. */
+    UCC_COLL_ARGS_FLAG_USE_EC_UCP           = UCC_BIT(9)  /*!< If set, reduce will be performed 
+                                                               using UCP atomics if available. */
 } ucc_coll_args_flags_t;
 
 /**

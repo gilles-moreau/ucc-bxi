@@ -136,8 +136,8 @@ using CollReduceTypeOpsAvg = ::testing::Types<
     TypeOpPair<UCC_DT_FLOAT128_COMPLEX, avg>, TypeOpPair<UCC_DT_BFLOAT16, avg>>;
 
 using CollReduceTypeOpsUcp = ::testing::Types<TypeOpPair<UCC_DT_UINT32, sum>, 
-    TypeOpPair<UCC_DT_UINT64, sum>, TypeOpPair<UCC_DT_UINT32, land>, 
-    TypeOpPair<UCC_DT_UINT64, land>, TypeOpPair<UCC_DT_FLOAT32, sum>,
+    TypeOpPair<UCC_DT_UINT64, sum>, TypeOpPair<UCC_DT_UINT32, band>, 
+    TypeOpPair<UCC_DT_UINT64, band>, TypeOpPair<UCC_DT_FLOAT32, sum>,
     TypeOpPair<UCC_DT_FLOAT64, sum>>;
 
 static inline bool ucc_reduction_is_supported(ucc_datatype_t dt,

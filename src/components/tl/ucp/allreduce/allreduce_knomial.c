@@ -181,6 +181,9 @@ UCC_KN_PHASE_PROXY:
     }
 
 completion:
+    if (task->flags & UCC_TL_UCP_TASK_FLAG_SCHEDULED) {
+        ucp_sched_fini(task->sched);
+    }
     ucc_assert(UCC_TL_UCP_TASK_P2P_COMPLETE(task));
     task->super.status = UCC_OK;
     UCC_TL_UCP_PROFILE_REQUEST_EVENT(coll_task, "ucp_allreduce_kn_done", 0);
@@ -193,6 +196,7 @@ ucc_status_t ucc_tl_ucp_allreduce_knomial_start(ucc_coll_task_t *coll_task)
 {
     ucc_tl_ucp_task_t *task      = ucc_derived_of(coll_task, ucc_tl_ucp_task_t);
     ucc_coll_args_t   *coll_args = &TASK_ARGS(task);
+
     ucc_tl_ucp_team_t *team      = TASK_TEAM(task);
     ucc_rank_t         size      = (ucc_rank_t)task->subset.map.ep_num;
     ucc_rank_t         rank      = task->subset.myrank;
@@ -203,6 +207,7 @@ ucc_status_t ucc_tl_ucp_allreduce_knomial_start(ucc_coll_task_t *coll_task)
     ucc_mrange_uint_t *p         = &team->cfg.allreduce_kn_radix;
     ucc_kn_radix_t     cfg_radix;
     ucc_status_t       status;
+    void                  *sbuf       = coll_args->src.info.buffer;
 
     UCC_TL_UCP_PROFILE_REQUEST_EVENT(coll_task, "ucp_allreduce_kn_start", 0);
     task->allreduce_kn.phase = UCC_KN_PHASE_INIT;
@@ -231,6 +236,11 @@ ucc_status_t ucc_tl_ucp_allreduce_knomial_start(ucc_coll_task_t *coll_task)
             return status;
         }
     }
+
+    ucc_debug("value src[0]=%d, src[1]=%d, src[2]=%d",
+              ((uint32_t *)sbuf)[0],
+              ((uint32_t *)sbuf)[1],
+              ((uint32_t *)sbuf)[2]);
 
     return ucc_progress_queue_enqueue(UCC_TL_CORE_CTX(team)->pq, &task->super);
 }

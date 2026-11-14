@@ -386,6 +386,10 @@ void ucc_ec_ucp_atomic_nbx_callback(void *request, ucs_status_t status,
         case UCC_EC_UCP_REDUCE_STAGE_WRITE_DST:
             break;
         case UCC_EC_UCP_REDUCE_STAGE_WAIT:
+            ec_debug(&ucc_ec_ucp.super, "after get value dst[0]=%d. dst[1]=%d, dst[2]=%d",
+                     ((uint32_t *)eee_task->reduce.dst)[0],
+                     ((uint32_t *)eee_task->reduce.dst)[1],
+                     ((uint32_t *)eee_task->reduce.dst)[2]);
             eee_task->reduce.stage = UCC_EC_UCP_REDUCE_STAGE_COMPLETED;
             eee_task->super.status = eee_task->failure ? UCC_ERR_NO_MESSAGE :
                                                          UCC_OK;
